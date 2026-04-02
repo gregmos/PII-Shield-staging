@@ -38,7 +38,13 @@ Document -> [PII Shield on HOST] -> output_path only -> [Claude: reads anonymize
 - **`find_file` tool** — Resolves filenames to host paths using configured working directory.
 - **`docx_output_path`** — For `.docx` input, `anonymize_file` returns both `.txt` (for Claude to read) and `.docx` (preserving formatting for REDLINE mode), with consistent placeholder mapping.
 - **Tracked changes support** — `deanonymize_docx` now processes text inside `w:ins`/`w:del` elements (Word tracked changes).
-- **Reduced false positives** — Removed aggressive `DateRecognizer`; dates no longer over-detected in legal documents.
+- **212-term false positive stoplist** — Contract roles, job titles, legal terms, generic nouns, abbreviations, brand names. Article stripping ("the Contractor" → matches "contractor"). Multi-word check (all significant words in stoplist → drop). Cyrillic homoglyph normalization.
+- **Min score raised to 0.50** — Reduces low-confidence noise from both GLiNER and SpaCy while keeping real PII.
+- **Output subdirectory** — `anonymize_file` creates a per-session subfolder (`pii_shield_<id>/`) to organize generated files.
+- **Diagnostic logging** — Detailed `pii_shield_debug.log` in the output folder: raw NER detections, skip reasons, confirmed entities with recognizer names, anonymization mapping, docx pass details.
+- **Review UI accuracy** — `_docx_to_html` now replicates `para.text` character positions exactly (direct child `w:r`/`w:hyperlink` only), eliminating text drift in the review web UI.
+- **Cross-run docx replacement** — Handles `w:br`, `w:tab`, `w:cr` inside runs; cross-paragraph replacements via sliding window.
+- **VirtioFS compatibility** — `os.fsync()` after docx save to ensure file visibility through virtualized mounts.
 
 ---
 
@@ -157,7 +163,7 @@ PII Shield is designed so that **PII never flows through Claude's API** at any s
 - **Human-in-the-Loop Review** — Local web UI to verify anonymization, remove false positives, add missed entities
 - **PDF support** — `anonymize_file` handles `.pdf`, `.docx`, `.txt`, `.md`, `.csv`
 - **Exact entity forms** — "Acme" (`<ORG_1>`) and "Acme Corp." (`<ORG_1a>`) get separate placeholders, each restored exactly
-- **False positive filtering** — Stop-list for common legal terms + Cyrillic homoglyph handling
+- **False positive filtering** — 212-term stoplist for legal/contract terms, article stripping, multi-word analysis, Cyrillic homoglyph handling
 - **DOCX support** — Anonymize/deanonymize Word documents preserving all formatting, including tracked changes (`w:ins`/`w:del`)
 - **17 EU pattern recognizers** — UK NIN/NHS, DE Tax ID, FR NIR, IT Fiscal Code, ES DNI/NIE, CY TIC, EU VAT/IBAN, and more
 - **Cross-process persistence** — Review data saved to disk, works across multiple MCP server instances
@@ -255,7 +261,7 @@ Set in Claude Desktop: **Settings > Extensions > PII Shield**
 
 | Setting | Default | Description |
 |---------|---------|------------|
-| Min confidence score | `0.35` | Minimum NER confidence threshold (0.0-1.0) |
+| Min confidence score | `0.50` | Minimum NER confidence threshold (0.0-1.0) |
 | GLiNER model | `urchade/gliner_small-v2.1` | HuggingFace GLiNER model for zero-shot NER |
 | Working directory | *(empty)* | Folder path for automatic file resolution by `find_file` |
 
@@ -307,7 +313,7 @@ python setup_pii_shield.py
 | "pip install failed" | Check your internet connection. Corporate firewalls may block PyPI or HuggingFace |
 | GLiNER model download fails | The server falls back to SpaCy-only NER (lower quality but functional). Retry later or check proxy settings |
 | HITL review page not loading | Check that port 8766 is free. The server tries port 8767 as fallback. |
-| Too many false positives | DATE_TIME detection is disabled. If still too many, raise `PII_MIN_SCORE` to 0.5 in extension settings. |
+| Too many false positives | Default min score is `0.50`. 212-term stoplist filters contract roles, legal terms, generic nouns. Raise `PII_MIN_SCORE` further if needed. |
 
 ## Author
 

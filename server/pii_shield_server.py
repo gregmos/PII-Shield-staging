@@ -249,10 +249,36 @@ from mcp.server.fastmcp import FastMCP
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [PII-Shield] %(message)s", stream=sys.stderr)
 log = logging.getLogger("pii-shield")
 
+# --- Detailed file logger for diagnostics ---
+_flog = logging.getLogger("pii-shield-detail")
+_flog.setLevel(logging.DEBUG)
+_flog.propagate = False  # don't echo to stderr
+_flog_handler = None
+
+def _ensure_file_log(folder=None):
+    """Set up file logger in the given folder (or cache dir). Called once per session."""
+    global _flog_handler
+    if _flog_handler is not None:
+        return
+    log_dir = Path(folder) if folder else Path.home() / ".pii_shield_cache"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "pii_shield_debug.log"
+    _flog_handler = logging.FileHandler(str(log_path), mode="a", encoding="utf-8")
+    _flog_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    _flog.addHandler(_flog_handler)
+    _flog.info(f"===== PII Shield session started =====")
+    log.info(f"Debug log: {log_path}")
+
 # ============================================================
 # Config
 # ============================================================
-MIN_SCORE = float(os.environ.get("PII_MIN_SCORE", "0.35"))
+_DEFAULT_MIN_SCORE = 0.50
+
+def _get_min_score():
+    """Read MIN_SCORE from env on every call — allows live config updates."""
+    return float(os.environ.get("PII_MIN_SCORE", str(_DEFAULT_MIN_SCORE)))
+
+MIN_SCORE = _get_min_score()  # cached for list_entities display
 MAPPING_TTL_DAYS = int(os.environ.get("PII_MAPPING_TTL_DAYS", "7"))
 
 MAPPING_DIR = Path.home() / ".pii_shield" / "mappings"
@@ -587,29 +613,64 @@ class PIIEngine:
     # Common legal/contract terms that NER frequently misclassifies as PII.
     # Case-insensitive match against normalized entity text.
     _LEGAL_STOPLIST = {
-        # Contract parties / roles
-        "contractor", "client", "customer", "vendor", "supplier",
+        # ── Contract parties / roles ──
+        "contractor", "subcontractor", "client", "customer", "vendor",
+        "supplier", "distributor", "franchisor", "franchisee",
         "licensor", "licensee", "employer", "employee", "consultant",
-        "subcontractor", "agent", "principal", "assignee", "assignor",
+        "agent", "principal", "assignee", "assignor",
         "guarantor", "beneficiary", "trustee", "grantor", "grantee",
         "lessee", "lessor", "tenant", "landlord", "borrower", "lender",
         "buyer", "seller", "partner", "shareholder", "director",
         "officer", "secretary", "treasurer", "representative",
-        # Document terms
+        "obligor", "obligee", "indemnitor", "indemnitee",
+        "party", "parties", "counterparty",
+        # ── Job titles / corporate roles (NER → PERSON) ──
+        "chairman", "chairwoman", "chairperson", "president",
+        "vice president", "manager", "supervisor", "administrator",
+        "coordinator", "counsel", "attorney", "auditor", "comptroller",
+        "commissioner", "mediator", "arbitrator", "notary",
+        "ceo", "cfo", "cto", "coo", "cmo", "cio", "cpo",
+        # ── Document / legal structural terms ──
         "order", "agreement", "contract", "amendment", "addendum",
         "exhibit", "schedule", "appendix", "annex", "section",
-        "article", "clause", "paragraph", "party", "parties",
+        "article", "clause", "paragraph", "recital", "preamble",
         "purchase order", "statement of work", "scope of work",
-        # Generic terms NER often catches
+        "whereas", "herein", "thereof", "therein", "hereby",
+        # ── Legal concepts (capitalized in contracts → NER false positives) ──
+        "effective date", "termination date", "commencement date",
+        "governing law", "force majeure", "confidential information",
+        "intellectual property", "indemnification", "arbitration",
+        "term", "territory", "termination", "jurisdiction",
+        "warranty", "liability", "negligence", "damages",
+        "breach", "remedy", "waiver", "severability",
+        # ── Generic business / corporate terms ──
         "company", "corporation", "entity", "firm", "business",
         "affiliate", "subsidiary", "parent", "division", "branch",
-        "effective date", "termination date", "commencement date",
-        # Software / product / brand names (not PII)
+        "enterprise", "venture", "consortium", "syndicate",
+        "board", "committee", "department", "office",
+        # ── Generic nouns NER misclassifies as PERSON ──
+        "actor", "actors", "creator", "creators", "model", "models",
+        "influencer", "influencers", "talent", "talents",
+        "candidate", "applicant", "recipient", "subscriber",
+        "member", "participant", "attendee", "user", "owner",
+        "author", "editor", "contributor", "reviewer", "approver",
+        "sender", "receiver", "holder", "bearer", "maker",
+        "performer", "speaker", "presenter", "moderator",
+        "witness", "signatory", "undersigned",
+        "purchase", "invoice", "payment", "delivery", "shipment",
+        # ── Short ambiguous words (SpaCy/GLiNER false positives) ──
+        "will", "may", "case", "show", "set", "lead", "head",
+        "share", "note", "record", "draft", "release", "notice",
+        # ── Abbreviations ──
+        "cta", "nda", "sow", "msa", "sla", "roi", "kpi",
+        "llc", "ltd", "inc", "corp", "plc", "gmbh", "sarl",
+        "usd", "eur", "gbp", "jpy", "cny",
+        # ── Software / product / brand names (not PII) ──
         "adobe", "adobe premiere", "adobe premiere pro", "adobe after effects",
         "final cut", "final cut pro", "davinci resolve",
         "photoshop", "illustrator", "figma", "canva",
         "microsoft", "google", "apple", "amazon", "meta",
-        # Common with Cyrillic homoglyphs (С = Cyrillic Es looks like Latin C)
+        # ── Cyrillic homoglyphs (С = Cyrillic Es looks like Latin C) ──
         "\u0441lient", "сlient",  # Cyrillic С + lient
     }
 
@@ -641,8 +702,28 @@ class PIIEngine:
             # Also check with Cyrillic homoglyph normalization (С→C, А→A, etc.)
             _CYRILLIC_TO_LATIN = str.maketrans('СсАаЕеОоРрХхВвМмТтНн', 'CcAaEeOoPpXxBbMmTtHh')
             norm_latin = norm_txt.translate(_CYRILLIC_TO_LATIN)
-            if norm_txt in PIIEngine._LEGAL_STOPLIST or norm_latin in PIIEngine._LEGAL_STOPLIST:
+            # Strip leading articles before stoplist check
+            _ARTICLES = ("the ", "a ", "an ")
+            stripped = norm_txt
+            for art in _ARTICLES:
+                if stripped.startswith(art):
+                    stripped = stripped[len(art):]
+                    break
+            stripped_latin = norm_latin
+            for art in _ARTICLES:
+                if stripped_latin.startswith(art):
+                    stripped_latin = stripped_latin[len(art):]
+                    break
+            _sl = PIIEngine._LEGAL_STOPLIST
+            if (norm_txt in _sl or norm_latin in _sl
+                    or stripped in _sl or stripped_latin in _sl):
                 log.info(f"FP drop (stop-list): '{txt}' (type={etype})")
+                continue
+            # Also drop if ALL meaningful words are in stoplist
+            _skip_words = {"the", "a", "an", "of", "and", "or", "for", "in", "to", "by"}
+            meaningful = [w for w in norm_txt.split() if w not in _skip_words]
+            if meaningful and all(w in _sl for w in meaningful):
+                log.info(f"FP drop (all words in stop-list): '{txt}' (type={etype})")
                 continue
 
             # Rule 1: Single lowercase word + named entity type → likely false positive
@@ -700,26 +781,69 @@ class PIIEngine:
     def detect(self, text, language="en"):
         """Detect PII using NER. All entities above MIN_SCORE are confirmed."""
         self._ensure_ready()
+        min_score = _get_min_score()
+
+        _flog.info(f"--- detect() start | text length={len(text)} | min_score={min_score} | backend={self._backend} ---")
+
         results = self._analyze_chunked(text, language)
+        _flog.info(f"  Raw analyzer results: {len(results)} detections")
+
+        # Log ALL raw results with recognizer info
+        for r in results:
+            rname = getattr(r, 'recognition_metadata', {}).get('recognizer_name', 'unknown')
+            et = text[r.start:r.end]
+            _flog.info(f"  RAW: [{rname}] {r.entity_type} score={r.score:.3f} [{r.start}:{r.end}] \"{et}\"")
+
         results = self._deduplicate(results)
+        _flog.info(f"  After dedup: {len(results)} detections")
 
         entities = []
+        skipped_low_score = []
 
         for r in results:
             et = text[r.start:r.end]
             etype = r.entity_type
+            rname = getattr(r, 'recognition_metadata', {}).get('recognizer_name', 'unknown')
 
-            if r.score < MIN_SCORE:
+            if r.score < min_score:
+                skipped_low_score.append(f"[{rname}] {etype}({r.score:.3f})=\"{et}\"")
                 continue
 
             entry = {
                 "text": et, "type": etype, "start": r.start, "end": r.end,
                 "score": round(r.score, 3), "verified": True, "reason": "NER",
+                "_recognizer": rname,
             }
             entities.append(entry)
 
+        if skipped_low_score:
+            _flog.info(f"  Skipped (score < {min_score}): {len(skipped_low_score)}")
+            for s in skipped_low_score:
+                _flog.info(f"    SKIP: {s}")
+
+        # Log confirmed entities with recognizer
+        _flog.info(f"  Confirmed entities: {len(entities)}")
+        for e in entities:
+            _flog.info(f"    OK: [{e['_recognizer']}] {e['type']} score={e['score']} [{e['start']}:{e['end']}] \"{e['text']}\"")
+
+        # Stderr summary
+        post_stats = {}
+        for e in entities:
+            rn = e.get("_recognizer", "unknown")
+            post_stats[rn] = post_stats.get(rn, 0) + 1
+        log.info(f"Detect: {len(entities)} confirmed, {len(skipped_low_score)} skipped (min_score={min_score}) — by recognizer: {post_stats}")
+
+        for e in entities:
+            e.pop("_recognizer", None)
+
+        before_cleanup = len(entities)
         entities = self._clean_boundaries(text, entities)
-        log.info(f"Detect: {len(entities)} entities confirmed (NER-only)")
+        if len(entities) != before_cleanup:
+            _flog.info(f"  Boundary cleanup: {before_cleanup} → {len(entities)} entities")
+            for e in entities:
+                _flog.info(f"    FINAL: {e['type']} [{e['start']}:{e['end']}] \"{e['text']}\"")
+
+        _flog.info(f"--- detect() done | {len(entities)} entities ---")
         return entities
 
     # --- Fuzzy entity deduplication helpers ---
@@ -817,18 +941,22 @@ class PIIEngine:
         except (json.JSONDecodeError, TypeError):
             return confirmed
 
+        _flog.info(f"--- _apply_overrides | before={len(confirmed)} entities ---")
+        _flog.info(f"  Overrides: remove={overrides.get('remove', [])}, add={len(overrides.get('add', []))} items")
+
         # Remove false positives: by index AND all matching text+type
         if "remove" in overrides and overrides["remove"]:
             remove_set = set(overrides["remove"])
-            # Collect normalized text+type of removed entities
             removed_signatures = set()
             for i, e in enumerate(confirmed):
                 if i in remove_set:
                     removed_signatures.add((e["type"], e["text"].strip().lower()))
-            # Remove by index OR by matching text+type (catches all occurrences)
+                    _flog.info(f"  REMOVE by index {i}: {e['type']} \"{e['text']}\"")
+            before_remove = len(confirmed)
             confirmed = [e for i, e in enumerate(confirmed)
                          if i not in remove_set
                          and (e["type"], e["text"].strip().lower()) not in removed_signatures]
+            _flog.info(f"  Removed: {before_remove} → {len(confirmed)} entities")
 
         # Add user-specified entities: find ALL occurrences in text
         if "add" in overrides and overrides["add"]:
@@ -837,13 +965,13 @@ class PIIEngine:
                 add_type = addition.get("type", "PERSON")
                 if not add_text:
                     continue
-                # Find every occurrence of this text in the document
+                _flog.info(f"  ADD: type={add_type} text=\"{add_text}\" (searching all occurrences)")
+                add_count = 0
                 search_start = 0
                 while True:
                     pos = text.find(add_text, search_start)
                     if pos < 0:
                         break
-                    # Skip if already covered by an existing entity
                     already_covered = any(
                         e["start"] <= pos and pos + len(add_text) <= e["end"]
                         for e in confirmed
@@ -858,13 +986,25 @@ class PIIEngine:
                             "verified": True,
                             "reason": "user_added",
                         })
+                        add_count += 1
+                        _flog.info(f"    Added at [{pos}:{pos+len(add_text)}]")
+                    else:
+                        _flog.info(f"    Skipped at [{pos}:{pos+len(add_text)}] — already covered")
                     search_start = pos + len(add_text)
+                _flog.info(f"    Total added for \"{add_text}\": {add_count} occurrences")
 
-        return sorted(confirmed, key=lambda x: x["start"])
+        result = sorted(confirmed, key=lambda x: x["start"])
+        _flog.info(f"--- _apply_overrides done | after={len(result)} entities ---")
+        for e in result:
+            _flog.info(f"    {e['type']} [{e['start']}:{e['end']}] \"{e['text']}\" (reason={e.get('reason','NER')})")
+        return result
 
     # --- Text anonymization ---
     def anonymize_text(self, text, language="en", prefix="", entity_overrides=""):
         t0 = time.time()
+        _ensure_file_log()
+        _flog.info(f"=== anonymize_text() | text_len={len(text)} | prefix={prefix!r} | has_overrides={bool(entity_overrides)} ===")
+
         entities = self.detect(text, language)
         confirmed = [e for e in entities if e.get("verified")]
 
@@ -873,6 +1013,9 @@ class PIIEngine:
             confirmed = self._apply_overrides(confirmed, text, entity_overrides)
 
         mapping = self._assign_placeholders(confirmed, prefix)
+        _flog.info(f"  Mapping ({len(mapping)} placeholders):")
+        for ph, real in sorted(mapping.items()):
+            _flog.info(f"    {ph} → \"{real}\"")
 
         anonymized = text
         for e in sorted(confirmed, key=lambda x: x["start"], reverse=True):
@@ -949,10 +1092,12 @@ class PIIEngine:
                 by_type[e["type"]] += 1
 
         docx_path = Path(docx_path)
-        out_path = docx_path.parent / f"{docx_path.stem}_anonymized.docx"
-        doc.save(str(out_path))
-
         session_id = uuid.uuid4().hex[:12]
+        out_dir = docx_path.parent / f"pii_shield_{session_id}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{docx_path.stem}_anonymized.docx"
+        self._save_docx(doc, out_path)
+
         save_mapping(session_id, mapping, {"source": str(docx_path)})
 
         return {
@@ -962,25 +1107,228 @@ class PIIEngine:
             "processing_time_ms": round((time.time() - t0) * 1000, 1),
         }
 
+    # --- Docx save helper (fsync for VirtioFS visibility) ---
+    @staticmethod
+    def _save_docx(doc, out_path):
+        """Save docx and fsync to ensure VirtioFS mount sees the complete file."""
+        doc.save(str(out_path))
+        try:
+            fd = os.open(str(out_path), os.O_RDONLY)
+            os.fsync(fd)
+            os.close(fd)
+        except OSError:
+            pass  # fsync not supported on all platforms
+
     # --- Apply existing mapping to docx (for re-anonymization with HITL overrides) ---
-    def anonymize_docx_with_mapping(self, docx_path, mapping):
+    @staticmethod
+    def _collect_paragraph_segments(p_elem, _wns):
+        """Collect all inline text-producing elements in document order.
+        Returns list of (element, contributed_text, kind) where kind is 'wt'|'br'|'tab'|'cr'.
+        w:br → '\\n', w:tab → '\\t', w:cr → '\\r' — matching what para.text produces.
+        Skips page/column breaks (w:br with w:type='page'|'column') — only text wrapping breaks."""
+        segments = []
+        for elem in p_elem.iter():
+            tag = elem.tag
+            if tag == f'{{{_wns}}}t':
+                segments.append((elem, elem.text or "", "wt"))
+            elif tag == f'{{{_wns}}}br':
+                br_type = elem.get(f'{{{_wns}}}type')
+                if br_type in ('page', 'column'):
+                    continue  # not a text line break
+                segments.append((elem, "\n", "br"))
+            elif tag == f'{{{_wns}}}tab':
+                segments.append((elem, "\t", "tab"))
+            elif tag == f'{{{_wns}}}cr':
+                segments.append((elem, "\r", "cr"))
+        return segments
+
+    @staticmethod
+    def _replace_across_runs(p_elem, old_text, new_text, _wns):
+        """Replace old_text with new_text across split runs, preserving formatting.
+        Handles w:br (\\n), w:tab (\\t), w:cr (\\r) elements — so text extracted via
+        para.text (which includes these chars) can be matched in the XML structure."""
+        if not old_text:
+            return
+        while True:
+            segments = PIIEngine._collect_paragraph_segments(p_elem, _wns)
+            if not segments:
+                break
+
+            joined = "".join(s[1] for s in segments)
+            idx = joined.find(old_text)
+            if idx == -1:
+                break
+
+            end_idx = idx + len(old_text)
+            seg_pos = 0
+            first_seg = last_seg = -1
+            offset_in_first = offset_in_last_end = 0
+
+            for i, (elem, text, kind) in enumerate(segments):
+                seg_end = seg_pos + len(text)
+                if first_seg == -1 and seg_end > idx:
+                    first_seg = i
+                    offset_in_first = idx - seg_pos
+                if seg_end >= end_idx:
+                    last_seg = i
+                    offset_in_last_end = end_idx - seg_pos
+                    break
+                seg_pos = seg_end
+
+            if first_seg == -1 or last_seg == -1:
+                break
+
+            # Find first w:t element in match range to host the replacement text
+            host_seg = None
+            for i in range(first_seg, last_seg + 1):
+                if segments[i][2] == "wt":
+                    host_seg = i
+                    break
+
+            if host_seg is None:
+                break  # No text element in range — cannot place replacement
+
+            # Apply replacement across all segments in the match range
+            for i in range(first_seg, last_seg + 1):
+                elem, text, kind = segments[i]
+
+                if i == host_seg:
+                    # This w:t gets the replacement text
+                    prefix = text[:offset_in_first] if i == first_seg else ""
+                    suffix = text[offset_in_last_end:] if i == last_seg else ""
+                    elem.text = prefix + new_text + suffix
+                elif kind == "wt":
+                    # Other w:t elements: keep only text outside the match
+                    if i == first_seg:
+                        elem.text = text[:offset_in_first]
+                    elif i == last_seg:
+                        elem.text = text[offset_in_last_end:]
+                    else:
+                        elem.text = ""
+                else:
+                    # Non-text element (br/tab/cr) inside match range: remove from XML
+                    parent = elem.getparent()
+                    if parent is not None:
+                        parent.remove(elem)
+
+    @staticmethod
+    def _replace_cross_paragraphs(all_p_elems, old_text, new_text, _wns):
+        """Replace text that spans multiple paragraphs (contains \\n from paragraph join).
+        Splits old_text by \\n, finds matching consecutive paragraphs, puts replacement in
+        first paragraph and clears matched portions in subsequent paragraphs.
+        Loops to handle repeated occurrences of the same text."""
+        # Filter out empty parts from leading/trailing/consecutive \n
+        raw_parts = old_text.split("\n")
+        parts = [p for p in raw_parts if p]
+        if len(parts) < 2:
+            # After filtering empties, if < 2 non-empty parts, can't do cross-paragraph match
+            return False
+
+        replaced_any = False
+        while True:
+            # Rebuild per-paragraph virtual text each iteration (previous replacements change it)
+            para_data = []
+            for p_elem in all_p_elems:
+                segs = PIIEngine._collect_paragraph_segments(p_elem, _wns)
+                vtext = "".join(s[1] for s in segs)
+                para_data.append((p_elem, vtext))
+
+            found = False
+            for start in range(len(para_data) - len(parts) + 1):
+                matched = True
+                for j, part in enumerate(parts):
+                    p_text = para_data[start + j][1]
+                    if j == 0:
+                        # First part must be a suffix of the paragraph
+                        if not part or not p_text.endswith(part):
+                            matched = False; break
+                    elif j == len(parts) - 1:
+                        # Last part must be a prefix of the paragraph
+                        if not part or not p_text.startswith(part):
+                            matched = False; break
+                    else:
+                        # Middle parts must match entire paragraph
+                        if p_text != part:
+                            matched = False; break
+
+                if not matched:
+                    continue
+
+                # Match found — apply replacement
+                # First paragraph: replace parts[0] at the end with new_text
+                PIIEngine._replace_across_runs(all_p_elems[start], parts[0], new_text, _wns)
+
+                # Middle paragraphs: clear all text
+                for j in range(1, len(parts) - 1):
+                    for seg_elem, _, seg_kind in PIIEngine._collect_paragraph_segments(all_p_elems[start + j], _wns):
+                        if seg_kind == "wt":
+                            seg_elem.text = ""
+                        else:
+                            parent = seg_elem.getparent()
+                            if parent is not None:
+                                parent.remove(seg_elem)
+
+                # Last paragraph: remove parts[-1] from start
+                PIIEngine._replace_across_runs(all_p_elems[start + len(parts) - 1], parts[-1], "", _wns)
+
+                found = True
+                replaced_any = True
+                break  # restart search from beginning (paragraph texts changed)
+
+            if not found:
+                break
+
+        return replaced_any
+
+    def anonymize_docx_with_mapping(self, docx_path, mapping, out_dir=None):
         """Apply a known placeholder mapping to a .docx via find-replace. No NER detection.
-        Searches ALL w:t elements including inside w:ins/w:del (tracked changes)."""
+        Handles split runs, w:br/w:tab/w:cr, and text spanning multiple paragraphs.
+        Searches ALL w:p elements in the entire document XML (paragraphs, tables, text boxes,
+        content controls, headers, footers, footnotes, endnotes)."""
         from docx import Document
         doc = Document(str(docx_path))
-        # Reverse: {placeholder: real_text} → {real_text: placeholder}, longest first
         reverse_map = {v: k for k, v in mapping.items()}
         sorted_texts = sorted(reverse_map.keys(), key=len, reverse=True)
-        _nsmap = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
-        for para in self._iter_docx_paragraphs(doc):
-            for t_elem in para._element.findall('.//w:t', _nsmap):
-                text = t_elem.text or ""
-                for real_text in sorted_texts:
-                    if real_text in text:
-                        text = text.replace(real_text, reverse_map[real_text])
-                t_elem.text = text
-        out = Path(docx_path).parent / f"{Path(docx_path).stem}_anonymized.docx"
-        doc.save(str(out))
+        _wns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
+        all_p_elems = list(self._iter_all_wp_elements(doc))
+        _flog.info(f"=== anonymize_docx_with_mapping | {len(mapping)} placeholders | {len(all_p_elems)} paragraphs ===")
+        _flog.info(f"  Reverse map ({len(reverse_map)} entries, sorted by length desc):")
+        for rt in sorted_texts:
+            _flog.info(f"    \"{rt}\" → {reverse_map[rt]}")
+
+        # Pass 1: single-paragraph replacements (handles split runs + w:br/w:tab/w:cr)
+        cross_para_texts = []
+        for real_text in sorted_texts:
+            found = False
+            for p_idx, p_elem in enumerate(all_p_elems):
+                segs = self._collect_paragraph_segments(p_elem, _wns)
+                vtext = "".join(s[1] for s in segs)
+                if real_text in vtext:
+                    _flog.info(f"  PASS1 FOUND: \"{real_text[:60]}\" in para {p_idx} → {reverse_map[real_text]}")
+                    self._replace_across_runs(p_elem, real_text, reverse_map[real_text], _wns)
+                    found = True
+            if not found and "\n" in real_text:
+                cross_para_texts.append(real_text)
+                _flog.info(f"  PASS1 NOT FOUND (cross-para): \"{real_text[:60]}\" → queued for pass 2")
+            elif not found:
+                _flog.warning(f"  PASS1 NOT FOUND: \"{real_text[:60]}\" → {reverse_map[real_text]} — WILL NOT BE ANONYMIZED IN DOCX")
+
+        # Pass 2: cross-paragraph replacements for texts spanning multiple paragraphs
+        if cross_para_texts:
+            _flog.info(f"  PASS2: {len(cross_para_texts)} cross-paragraph texts to replace")
+            for real_text in cross_para_texts:
+                all_p_fresh = list(self._iter_all_wp_elements(doc))
+                result = self._replace_cross_paragraphs(all_p_fresh, real_text, reverse_map[real_text], _wns)
+                if result:
+                    _flog.info(f"  PASS2 OK: \"{real_text[:60]}\" → {reverse_map[real_text]}")
+                else:
+                    _flog.warning(f"  PASS2 FAILED: \"{real_text[:60]}\" → {reverse_map[real_text]} — NOT ANONYMIZED")
+
+        _flog.info(f"=== anonymize_docx_with_mapping done ===")
+        parent = Path(out_dir) if out_dir else Path(docx_path).parent
+        out = parent / f"{Path(docx_path).stem}_anonymized.docx"
+        self._save_docx(doc, out)
         return str(out)
 
     # --- Deanonymization ---
@@ -991,26 +1339,25 @@ class PIIEngine:
         return text
 
     def deanonymize_docx(self, docx_path, mapping):
-        """Restore placeholders in .docx — searches ALL w:t elements including inside w:ins/w:del (tracked changes)."""
+        """Restore placeholders in .docx — handles split runs, w:br/w:tab/w:cr, and cross-paragraph.
+        Searches ALL w:p elements in the entire document XML tree."""
         from docx import Document
         doc = Document(str(docx_path))
         sorted_ph = sorted(mapping.keys(), key=len, reverse=True)
-        _nsmap = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
-        for para in self._iter_docx_paragraphs(doc):
-            # findall('.//w:t') catches ALL text elements: direct runs AND inside w:ins/w:del
-            for t_elem in para._element.findall('.//w:t', _nsmap):
-                text = t_elem.text or ""
-                for ph in sorted_ph:
-                    if ph in text:
-                        text = text.replace(ph, mapping[ph])
-                t_elem.text = text
+        _wns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+        # Placeholders like <PERSON_1> don't contain \n, so single-pass is enough
+        for p_elem in self._iter_all_wp_elements(doc):
+            for ph in sorted_ph:
+                self._replace_across_runs(p_elem, ph, mapping[ph], _wns)
         out = Path(docx_path).parent / f"{Path(docx_path).stem}_restored.docx"
-        doc.save(str(out))
+        self._save_docx(doc, out)
         return str(out)
 
     # --- DOCX helpers ---
     @staticmethod
     def _iter_docx_paragraphs(doc):
+        """Iterate paragraphs via python-docx API (body, tables, headers/footers).
+        Used for text extraction where para.text / para.style are needed."""
         for p in doc.paragraphs:
             yield p
         for t in doc.tables:
@@ -1023,6 +1370,116 @@ class PIIEngine:
                 if hf:
                     for p in hf.paragraphs:
                         yield p
+
+    @staticmethod
+    def _is_inside_tracked_delete(p_elem, _wns):
+        """Check if a w:p element is inside a w:del (tracked deletion) ancestor."""
+        parent = p_elem.getparent()
+        while parent is not None:
+            if parent.tag == f'{{{_wns}}}del':
+                return True
+            parent = parent.getparent()
+        return False
+
+    @staticmethod
+    def _iter_all_wp_elements(doc):
+        """Iterate ALL w:p elements in the entire document XML tree.
+        Catches: body paragraphs, tables, text boxes (w:txbxContent),
+        content controls (w:sdtContent), tracked insertions, headers, footers.
+        Skips w:p elements inside w:del (tracked deletions) to avoid corrupting revision history."""
+        _wns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+        # Main document body
+        for p in doc.element.iter(f'{{{_wns}}}p'):
+            if not PIIEngine._is_inside_tracked_delete(p, _wns):
+                yield p
+        # Headers, footers (they have separate XML parts)
+        for sec in doc.sections:
+            for part in [sec.header, sec.footer, getattr(sec, 'first_page_header', None),
+                         getattr(sec, 'first_page_footer', None),
+                         getattr(sec, 'even_page_header', None),
+                         getattr(sec, 'even_page_footer', None)]:
+                if part and part._element is not None:
+                    for p in part._element.iter(f'{{{_wns}}}p'):
+                        if not PIIEngine._is_inside_tracked_delete(p, _wns):
+                            yield p
+
+    @staticmethod
+    def _docx_to_html(doc):
+        """Convert docx to simple HTML preserving bold/italic/underline and headings.
+        Text content matches para.text exactly: includes hyperlinks, excludes
+        tracked changes (w:ins/w:del), handles w:br as newlines."""
+        from html import escape as _html_escape
+        from lxml import etree
+        _nsmap = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+        _wns = _nsmap['w']
+
+        def _run_formatting(r_elem):
+            """Extract bold/italic/underline from w:rPr."""
+            rPr = r_elem.find(f'{{{_wns}}}rPr')
+            if rPr is None:
+                return False, False, False
+            b = rPr.find(f'{{{_wns}}}b')
+            bold = b is not None and b.get(f'{{{_wns}}}val', 'true') != 'false'
+            i = rPr.find(f'{{{_wns}}}i')
+            italic = i is not None and i.get(f'{{{_wns}}}val', 'true') != 'false'
+            u = rPr.find(f'{{{_wns}}}u')
+            underline = u is not None and u.get(f'{{{_wns}}}val', 'none') != 'none'
+            return bold, italic, underline
+
+        parts = []
+        for para in PIIEngine._iter_docx_paragraphs(doc):
+            style_name = para.style.name if para.style else ""
+            tag = "p"
+            if "Heading 1" in style_name or "Title" in style_name:
+                tag = "h1"
+            elif "Heading 2" in style_name or "Subtitle" in style_name:
+                tag = "h2"
+            elif "Heading 3" in style_name:
+                tag = "h3"
+            elif "Heading" in style_name:
+                tag = "h4"
+
+            # Match para.text exactly: only direct child w:r and w:hyperlink,
+            # then their inline children (w:t, w:br, w:tab, w:cr, w:noBreakHyphen).
+            # para.text uses xpath 'w:r|w:hyperlink' on direct children only —
+            # NOT w:r buried inside w:smartTag, w:sdt, w:fldSimple, w:ins, w:del, etc.
+            runs_html = []
+
+            def _process_run(r_elem):
+                """Process a single w:r element — extract text with formatting."""
+                bold, italic, underline = _run_formatting(r_elem)
+                for child in r_elem:
+                    child_tag = etree.QName(child.tag).localname if '}' in child.tag else child.tag
+                    if child_tag == 't':
+                        if child.text:
+                            t = _html_escape(child.text)
+                            if bold:
+                                t = f"<b>{t}</b>"
+                            if italic:
+                                t = f"<i>{t}</i>"
+                            if underline:
+                                t = f"<u>{t}</u>"
+                            runs_html.append(t)
+                    elif child_tag == 'br':
+                        runs_html.append('<br>')
+                    elif child_tag in ('tab', 'ptab'):
+                        runs_html.append('&#9;')
+                    elif child_tag == 'cr':
+                        runs_html.append('<br>')
+                    elif child_tag == 'noBreakHyphen':
+                        runs_html.append('-')
+
+            for child in para._element:
+                child_tag = etree.QName(child.tag).localname if '}' in child.tag else child.tag
+                if child_tag == 'r':
+                    _process_run(child)
+                elif child_tag == 'hyperlink':
+                    for sub in child:
+                        sub_tag = etree.QName(sub.tag).localname if '}' in sub.tag else sub.tag
+                        if sub_tag == 'r':
+                            _process_run(sub)
+            parts.append(f"<{tag}>{''.join(runs_html)}</{tag}>")
+        return "\n".join(parts)
 
     @staticmethod
     def _get_runs(para):
@@ -1166,6 +1623,13 @@ def anonymize_file(file_path: str, language: str = "en", prefix: str = "", revie
             return json.dumps({"error": f"File not found: {p}",
                                "hint": "Ask the user for the full host path to the file."})
 
+    # Create output subdirectory to keep generated files organized
+    # Re-anonymization reuses the same output dir via session_id
+    def _make_output_dir(parent, sid):
+        out_dir = parent / f"pii_shield_{sid}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir
+
     # Resolve HITL overrides from review session (stored on server, never sent to Claude)
     entity_overrides = ""
     if review_session_id:
@@ -1198,43 +1662,68 @@ def anonymize_file(file_path: str, language: str = "en", prefix: str = "", revie
             return json.dumps({"error": "PDF has no extractable text layer. Scanned PDFs (OCR) are not yet supported.",
                                "file": str(p)})
         r = engine.anonymize_text(text, language, prefix=prefix, entity_overrides=entity_overrides)
-        out = p.parent / f"{p.stem}_anonymized.txt"
+        out_dir = _make_output_dir(p.parent, r["session_id"])
+        out = out_dir / f"{p.stem}_anonymized.txt"
         out.write_text(r["anonymized_text"], encoding="utf-8")
         r.pop("anonymized_text", None)
         r["output_path"] = str(out)
+        r["output_dir"] = str(out_dir)
         r["note"] = "Anonymized text written to output_path. Read the file to get the content."
         return json.dumps(r, indent=2, ensure_ascii=False)
     elif p.suffix.lower() == ".docx":
         # Extract text → anonymize_text → .txt (readable by Claude + review data for HITL)
         # Also produce anonymized .docx (preserves formatting for REDLINE mode)
+        _ensure_file_log(str(p.parent))
+        _flog.info(f"======== anonymize_file DOCX | {p.name} | review_session_id={review_session_id!r} ========")
         try:
             from docx import Document as _DocxDoc
             _doc = _DocxDoc(str(p))
             text = "\n".join(para.text for para in PIIEngine._iter_docx_paragraphs(_doc))
+            _flog.info(f"  Extracted text: {len(text)} chars from {sum(1 for _ in PIIEngine._iter_docx_paragraphs(_doc))} paragraphs")
         except Exception as e:
             return json.dumps({"error": f"Failed to read docx: {e}"})
+        # Generate HTML for review UI (preserves formatting)
+        try:
+            docx_html = PIIEngine._docx_to_html(_doc)
+        except Exception:
+            docx_html = None
         r = engine.anonymize_text(text, language, prefix=prefix, entity_overrides=entity_overrides)
+        out_dir = _make_output_dir(p.parent, r["session_id"])
+        _ensure_file_log(str(out_dir))
+        _flog.info(f"  Output dir: {out_dir}")
+        # Store HTML in review data
+        if docx_html:
+            review_key = f"review:{r['session_id']}"
+            if review_key in _in_memory_mappings:
+                _in_memory_mappings[review_key]["original_html"] = docx_html
+                _save_review_to_disk(r['session_id'], _in_memory_mappings[review_key])
         # Write .txt for Claude to read
-        out_txt = p.parent / f"{p.stem}_anonymized.txt"
+        out_txt = out_dir / f"{p.stem}_anonymized.txt"
         out_txt.write_text(r["anonymized_text"], encoding="utf-8")
         r.pop("anonymized_text", None)
         r["output_path"] = str(out_txt)
+        r["output_dir"] = str(out_dir)
         # Also produce anonymized .docx (same mapping as .txt — consistent placeholders)
         try:
             mapping = load_mapping(r["session_id"])
-            docx_out = engine.anonymize_docx_with_mapping(p, mapping)
+            _flog.info(f"  Producing anonymized .docx with {len(mapping)} placeholders")
+            docx_out = engine.anonymize_docx_with_mapping(p, mapping, out_dir)
             r["docx_output_path"] = docx_out
+            _flog.info(f"  Docx saved: {docx_out}")
         except Exception as e:
             log.warning(f"anonymize_docx failed (txt output OK): {e}")
+            _flog.warning(f"  anonymize_docx FAILED: {e}")
         r["note"] = "Anonymized text at output_path (.txt). For REDLINE, use docx_output_path (.docx with formatting)."
         return json.dumps(r, indent=2, ensure_ascii=False)
     elif p.suffix.lower() in (".txt", ".md", ".csv", ".log", ".text"):
         text = p.read_text(encoding="utf-8")
         r = engine.anonymize_text(text, language, prefix=prefix, entity_overrides=entity_overrides)
-        out = p.parent / f"{p.stem}_anonymized{p.suffix}"
+        out_dir = _make_output_dir(p.parent, r["session_id"])
+        out = out_dir / f"{p.stem}_anonymized{p.suffix}"
         out.write_text(r["anonymized_text"], encoding="utf-8")
         r.pop("anonymized_text", None)
         r["output_path"] = str(out)
+        r["output_dir"] = str(out_dir)
         r["note"] = "Anonymized text written to output_path. Read the file to get the content."
         return json.dumps(r, indent=2, ensure_ascii=False)
     else:
@@ -1343,7 +1832,7 @@ def _write_docx(text: str, path: Path):
             p.style = doc.styles[f"Heading {level}"]
         else:
             doc.add_paragraph(stripped)
-    doc.save(str(path))
+    PIIEngine._save_docx(doc, path)
 
 
 @mcp.tool()
@@ -1465,7 +1954,7 @@ def list_entities() -> str:
         "quality": quality,
         "nlp_engine_class": engine_class,
         "recognizers": recognizer_names,
-        "min_score": MIN_SCORE,
+        "min_score": _get_min_score(),
         "mapping_ttl_days": MAPPING_TTL_DAYS,
         "recent_sessions": recent,
     }, indent=2, ensure_ascii=False)
@@ -1571,14 +2060,17 @@ class _ReviewHandler(BaseHTTPRequestHandler):
         if not review:
             self._send_json({"error": f"Review session not found: {session_id}"}, 404)
             return
-        self._send_json({
+        data = {
             "session_id": session_id,
             "original_text": review["original_text"],
             "entities": review["entities"],
             "confirmed": review["confirmed"],
             "status": review["status"],
             "overrides": review["overrides"],
-        })
+        }
+        if "original_html" in review:
+            data["original_html"] = review["original_html"]
+        self._send_json(data)
 
     def _handle_approve(self, session_id, body):
         review = _load_review_from_disk(session_id) or _get_review(session_id)

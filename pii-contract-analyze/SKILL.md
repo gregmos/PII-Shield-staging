@@ -97,7 +97,7 @@ All PII Shield tools are registered as MCP tools with prefix `mcp__PII_Shield__`
 
 | MCP tool name | Parameters | Returns to Claude |
 |---|---|---|
-| `mcp__PII_Shield__anonymize_file` | file_path, language, prefix, **review_session_id** | output_path (.txt) + session_id + docx_output_path (.docx, for .docx input only) (**text NOT in response — read from output_path**) |
+| `mcp__PII_Shield__anonymize_file` | file_path, language, prefix, **review_session_id** | output_path (.txt) + session_id + output_dir + docx_output_path (.docx, for .docx input only). All output files are in `output_dir` (a `pii_shield_<session_id>/` subfolder next to the source file). (**text NOT in response — read from output_path**) |
 | `mcp__PII_Shield__deanonymize_text` | text, session_id, output_path | **File path only** (takes anonymized text, writes deanonymized file) |
 | `mcp__PII_Shield__deanonymize_docx` | file_path, session_id | **File path only** |
 | `mcp__PII_Shield__get_mapping` | session_id | Placeholder keys + types only |
@@ -140,7 +140,7 @@ After every `anonymize_file` call, offer the user a review step. The review page
    - Wait 15 seconds, then call `get_review_status(session_id)`
    - If `"status": "pending"` — ask again: "Still reviewing? [Done / Need more time]"
    - If `"status": "approved"` — check `has_changes`:
-     - If `true`: call `anonymize_file(original_file_path, review_session_id=session_id)` — the server fetches the user's overrides internally and re-anonymizes. **No PII passes through Claude** — neither entity text nor override details. **IMPORTANT**: This returns a NEW `session_id` and new `output_path`. Use the NEW session_id for all subsequent steps (deanonymize, etc.). Re-read the anonymized text from the new output_path.
+     - If `true`: call `anonymize_file(original_file_path, review_session_id=session_id)` — the server fetches the user's overrides internally and re-anonymizes. **No PII passes through Claude** — neither entity text nor override details. **CRITICAL**: This returns a NEW `session_id`, new `output_path`, and (for .docx) new `docx_output_path`. You MUST use ALL new values for all subsequent steps — discard the old session_id, output_path, and docx_output_path. Re-read the anonymized text from the NEW output_path. For REDLINE mode, apply tracked changes to the NEW docx_output_path (not the old one).
      - If `false`: proceed with the original anonymized text
 4. If user chose **"Looks good"** or **"Skip review"** — proceed immediately with the original anonymized text
 
@@ -187,7 +187,8 @@ Full legal memorandum with risk assessment. The default mode.
 ```
 1. Warm-up: list_entities() → confirm tools loaded
 2. find_file(filename) → host path (or ask user if not found)
-3. anonymize_file(file_path) → output_path, session_id
+3. anonymize_file(file_path) → output_path, session_id, output_dir
+   All output files are in output_dir (pii_shield_<session_id>/ subfolder).
    Read the anonymized text from output_path (the file on disk)
    (PII never leaves the host — only the path goes through the API)
 4. HITL Review: start_review(session_id) → offer review to user (see "Human-in-the-Loop Review" section)
@@ -213,15 +214,18 @@ Apply tracked changes to make the contract more favorable for the specified part
 ```
 1. Warm-up: list_entities() → confirm tools loaded
 2. find_file(filename) → host path (or ask user if not found)
-3. anonymize_file(file_path) → output_path (.txt), docx_output_path (.docx), session_id
-   Read the anonymized text from output_path for analysis
-   Keep docx_output_path — this is the anonymized .docx with original formatting (same placeholders as .txt)
+3. anonymize_file(file_path) → output_path (.txt), docx_output_path (.docx), output_dir, session_id
+   All output files are in output_dir (a pii_shield_<session_id>/ subfolder next to the source file).
+   Read the anonymized text from output_path for analysis.
+   Keep docx_output_path — this is the anonymized .docx with original formatting (same placeholders as .txt).
 4. HITL Review: start_review(session_id) → offer review to user
-   If user made changes: anonymize_file(file_path, review_session_id=session_id) → new output_path, new docx_output_path, NEW session_id
-   Re-read from new output_path. Use NEW session_id and new docx_output_path for all subsequent steps.
+   If user made changes: anonymize_file(file_path, review_session_id=session_id) → new output_path, new docx_output_path, NEW output_dir, NEW session_id
+   ⚠️ CRITICAL: DISCARD ALL old values. Re-read from NEW output_path. Use NEW session_id for deanonymize.
+   Use NEW docx_output_path for Step 6 (tracked changes). The old docx does NOT contain the user's corrections.
 5. Analyze: identify clauses to change, draft new wording (all in placeholders)
 6. Apply tracked changes to the anonymized .docx (docx_output_path) via OOXML (python-docx + lxml)
-7. deanonymize_docx(tracked_changes.docx, session_id) → final.docx
+   Save the result into the same output_dir.
+7. deanonymize_docx(tracked_changes.docx, session_id) → final.docx (saved in output_dir)
 8. Copy to mnt/outputs/, present link to user
    **DO NOT read, verify, or pandoc the deanonymized file — it contains real PII. Just give the path.**
 ```
@@ -265,7 +269,8 @@ Concise document summary — key parties, subject, term, financial terms, notabl
 ```
 1. Warm-up: list_entities() → confirm tools loaded
 2. find_file(filename) → host path (or ask user if not found)
-3. anonymize_file(file_path) → output_path, session_id
+3. anonymize_file(file_path) → output_path, session_id, output_dir
+   All output files are in output_dir (pii_shield_<session_id>/ subfolder).
    Read the anonymized text from output_path (the file on disk)
 4. HITL Review: start_review(session_id) → offer review to user
    If user made changes: anonymize_file(file_path, review_session_id=session_id) → new output_path, NEW session_id
@@ -295,9 +300,9 @@ Compare two versions of a document or two related documents. Show what changed.
 ```
 1. Warm-up: list_entities() → confirm tools loaded
 2. find_file(filename_1), find_file(filename_2) → host paths (or ask user if not found)
-3. anonymize_file(file_path_1, prefix="D1") → output_path_1, session_id_1
+3. anonymize_file(file_path_1, prefix="D1") → output_path_1, session_id_1, output_dir_1
    Read the anonymized text from output_path_1
-4. anonymize_file(file_path_2, prefix="D2") → output_path_2, session_id_2
+4. anonymize_file(file_path_2, prefix="D2") → output_path_2, session_id_2, output_dir_2
    Read the anonymized text from output_path_2
 5. HITL Review: start_review(session_id_1) → offer review for primary document (D1)
    If user made changes: anonymize_file(file_path_1, review_session_id=session_id_1) → new output_path_1, NEW session_id_1
@@ -350,7 +355,8 @@ Just anonymize and return the anonymized file. No analysis.
 ```
 1. Warm-up: list_entities() → confirm tools loaded
 2. find_file(filename) → host path (or ask user if not found)
-3. anonymize_file(file_path) → output_path, session_id
+3. anonymize_file(file_path) → output_path, session_id, output_dir
+   All output files are in output_dir (pii_shield_<session_id>/ subfolder).
    Read the anonymized text from output_path (the file on disk)
 4. HITL Review: start_review(session_id) → offer review to user
    If user made changes: anonymize_file(file_path, review_session_id=session_id) → new output_path, NEW session_id
@@ -392,9 +398,10 @@ file "C:\Users\User\Downloads\testtest\contract.pdf"
 
 **Step 3 — Ask the user** (last resort): If VirtioFS mount info is not available and `find_file` fails, ask the user for the full host path.
 
-**Step 4 — Derive paths for subsequent files** from `output_path` returned by `anonymize_file`:
-- `anonymize_file` returns `output_path` like `C:\Users\User\Downloads\contract_anonymized.txt`
-- The parent folder is the host working directory — use it for other files in the same folder
+**Step 4 — Use `output_dir` for all subsequent files**:
+- `anonymize_file` returns `output_dir` like `C:\Users\User\Downloads\testtest\pii_shield_a1b2c3d4e5f6\`
+- This is the dedicated subfolder for this session — save all generated files here (tracked changes docx, etc.)
+- The parent of `output_dir` is the host working directory — use it to find other source files in the same folder
 
 **Supported formats**: `.pdf`, `.docx`, `.txt`, `.md`, `.csv`
 
@@ -404,14 +411,13 @@ file "C:\Users\User\Downloads\testtest\contract.pdf"
 
 ## Path Mapping for deanonymize_docx
 
-The `deanonymize_docx` tool runs on the HOST machine (Windows), not in the Linux VM. File paths must be converted.
+The `deanonymize_docx` tool runs on the HOST machine (Windows), not in the Linux VM. File paths must be Windows paths.
 
-**Rule**: Take the `output_path` returned by `anonymize_file` and derive the Windows path pattern from it. The anonymized file's `output_path` shows the Windows path format for the uploads folder. To reference a file in the outputs folder, replace `\uploads\` with `\outputs\` in the path pattern.
+**Rule**: All anonymized files are already in `output_dir` (a Windows path like `C:\Users\User\Downloads\testtest\pii_shield_abc123\`). Use paths from the `anonymize_file` response directly — they are already valid Windows paths.
 
-**Example**:
-- `anonymize_file` returns `output_path: "C:\Users\User\...\uploads\file_anonymized.docx"`
-- Your file is at `/sessions/.../mnt/outputs/analysis.docx`
-- Windows path: `"C:\Users\User\...\outputs\analysis.docx"`
+**For files you create** (e.g., tracked changes docx saved in the sandbox):
+- Your sandbox file is at `/sessions/.../mnt/uploads/output_dir_name/tracked_changes.docx`
+- Windows path: take `output_dir` from `anonymize_file` response and append the filename: `output_dir + "\tracked_changes.docx"`
 
 If `deanonymize_docx` returns "Not found" — double-check the path. The file must exist at the Windows path on the host machine.
 

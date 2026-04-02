@@ -90,23 +90,16 @@
   }
   .entity-added { border-style: dashed; }
 
-  /* Entity Tooltip */
+  /* Entity Tooltip — minimal type label on hover */
   .entity-tooltip {
-    display: none; position: absolute; bottom: calc(100% + 8px); left: 50%;
+    display: none; position: absolute; bottom: calc(100% + 4px); left: 50%;
     transform: translateX(-50%); background: var(--surface); border: 1px solid var(--border);
-    border-radius: 8px; padding: 8px 12px; white-space: nowrap; z-index: 50;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15); font-size: 12px;
+    border-radius: 5px; padding: 3px 8px; white-space: nowrap; z-index: 50;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12); font-size: 10px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+    pointer-events: none;
   }
   .entity:hover .entity-tooltip { display: block; }
-  .tooltip-type { font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; }
-  .tooltip-actions { display: flex; gap: 8px; margin-top: 6px; }
-  .tooltip-btn {
-    padding: 3px 10px; border-radius: 4px; border: 1px solid var(--border);
-    background: var(--surface); cursor: pointer; font-size: 11px; color: var(--text);
-  }
-  .tooltip-btn.remove { color: var(--danger); border-color: var(--danger); }
-  .tooltip-btn.restore { color: var(--accent); border-color: var(--accent); }
-  .tooltip-btn:hover { filter: brightness(0.9); }
 
   /* Sidebar */
   .sidebar {
@@ -180,6 +173,91 @@
   .legend-item { display: flex; align-items: center; gap: 4px; }
   .legend-dot { width: 10px; height: 10px; border-radius: 3px; }
 
+  /* Group hover — highlight all matching entities */
+  .entity.group-hover { outline: 2px solid currentColor; outline-offset: 1px; }
+  .entity-item.group-hover { background: var(--bg); }
+
+  /* Toast notification */
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 20px; box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+    font-size: 13px; color: var(--text); z-index: 400;
+    opacity: 0; transition: opacity 0.2s, transform 0.2s; pointer-events: none;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast .toast-icon { font-size: 16px; }
+
+  /* Sidebar group count badge */
+  .group-count {
+    font-size: 11px; color: var(--text-secondary); background: var(--bg);
+    padding: 1px 6px; border-radius: 4px; flex-shrink: 0; font-weight: 500;
+  }
+
+  /* Sidebar family variants (indented sub-items) */
+  .entity-item.variant {
+    padding-left: 32px; font-size: 12px; opacity: 0.85;
+  }
+  .entity-item .family-toggle {
+    font-size: 10px; width: 16px; text-align: center; cursor: pointer;
+    color: var(--text-secondary); flex-shrink: 0; user-select: none;
+    transition: transform 0.15s;
+  }
+  .entity-item .family-toggle.collapsed { transform: rotate(-90deg); }
+
+  /* HTML-mode document (docx formatting) */
+  .doc-content.html-mode { white-space: normal; }
+  .doc-content.html-mode p { margin-bottom: 0.6em; }
+  .doc-content.html-mode h1 { font-size: 1.5em; font-weight: 700; margin: 0.8em 0 0.4em; }
+  .doc-content.html-mode h2 { font-size: 1.3em; font-weight: 600; margin: 0.7em 0 0.3em; }
+  .doc-content.html-mode h3 { font-size: 1.15em; font-weight: 600; margin: 0.6em 0 0.3em; }
+  .doc-content.html-mode h4 { font-size: 1.05em; font-weight: 600; margin: 0.5em 0 0.2em; }
+  .doc-content.html-mode b, .doc-content.html-mode strong { font-weight: 700; }
+  .doc-content.html-mode i, .doc-content.html-mode em { font-style: italic; }
+  .doc-content.html-mode u { text-decoration: underline; }
+
+  /* Instruction bar */
+  .instruction-bar {
+    display: flex; align-items: center; gap: 8px; padding: 8px 24px;
+    background: var(--bg); border-bottom: 1px solid var(--border);
+    font-size: 12px; color: var(--text-secondary); line-height: 1.5;
+  }
+  .instruction-bar .instruction-icon { font-size: 16px; flex-shrink: 0; }
+  .instruction-bar strong { color: var(--text); }
+
+  /* Sidebar action buttons (remove/restore) */
+  .entity-item .action-btn {
+    width: 22px; height: 22px; border-radius: 4px; border: 1px solid transparent;
+    background: transparent; cursor: pointer; font-size: 12px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0; transition: opacity 0.15s, background 0.1s;
+    margin-left: auto;
+  }
+  .entity-item:hover .action-btn { opacity: 1; }
+  .entity-item .action-btn.remove-btn { color: var(--danger); }
+  .entity-item .action-btn.remove-btn:hover { background: var(--danger-bg); border-color: var(--danger); }
+  .entity-item .action-btn.restore-btn { color: var(--accent); }
+  .entity-item .action-btn.restore-btn:hover { background: var(--location-bg); border-color: var(--accent); }
+  .entity-item.removed .action-btn.restore-btn { opacity: 0.8; }
+
+  /* How it works section in sidebar */
+  .how-it-works {
+    padding: 12px 16px; border-top: 1px solid var(--border);
+    margin-top: auto; font-size: 11px; color: var(--text-secondary); line-height: 1.8;
+  }
+  .how-it-works .section-title {
+    text-align: center; font-size: 10px; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--text-secondary); margin-bottom: 6px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .how-it-works .section-title::before,
+  .how-it-works .section-title::after {
+    content: ''; flex: 1; height: 1px; background: var(--border);
+  }
+  .how-it-works .hint { display: flex; align-items: center; gap: 6px; }
+  .how-it-works .hint-icon { width: 16px; text-align: center; flex-shrink: 0; }
+
   /* Scrollbar */
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -201,13 +279,25 @@
   <button class="btn btn-approve" id="approve-btn" onclick="approve()">Approve</button>
 </div>
 
+<div class="instruction-bar">
+  <span class="instruction-icon">&#x1f4cb;</span>
+  <span>Review detected PII entities below. <strong>Click</strong> a highlighted entity to remove it (all matching occurrences removed). <strong>Select text</strong> to add missed entities. Click <strong>Approve</strong> when done.</span>
+</div>
+
 <div class="main">
   <div class="doc-panel">
     <div class="doc-content" id="doc-content"></div>
   </div>
-  <div class="sidebar">
+  <div class="sidebar" style="display:flex;flex-direction:column;">
     <div class="sidebar-header">Detected Entities</div>
-    <div class="entity-list" id="entity-list"></div>
+    <div class="entity-list" id="entity-list" style="flex:1;overflow-y:auto;"></div>
+    <div class="how-it-works">
+      <div class="section-title">How it works</div>
+      <div class="hint"><span class="hint-icon">&#x2715;</span> Remove false positive</div>
+      <div class="hint"><span class="hint-icon">&#x21A9;</span> Restore removed entity</div>
+      <div class="hint"><span class="hint-icon">&#x25BC;</span> Expand/collapse variants</div>
+      <div class="hint"><span class="hint-icon">&#x1F5B1;</span> Select text to add entity</div>
+    </div>
   </div>
 </div>
 
@@ -218,7 +308,7 @@
   <div class="legend-item"><div class="legend-dot" style="background:var(--comm)"></div> Contact</div>
   <div class="legend-item"><div class="legend-dot" style="background:var(--other)"></div> Other</div>
   <div class="spacer"></div>
-  <div class="legend-item" style="color:var(--text-secondary)">Click entity to remove &middot; Select text to add</div>
+  <div class="legend-item" style="color:var(--text-secondary)">Click entity to remove all occurrences &middot; Select text to add</div>
 </div>
 
 <div class="selection-toolbar" id="selection-toolbar">
@@ -227,6 +317,8 @@
   <button class="type-btn location" onclick="addEntity('LOCATION')">Location</button>
   <button class="type-btn other" onclick="addEntity('OTHER')">Other</button>
 </div>
+
+<div class="toast" id="toast"><span class="toast-icon"></span><span class="toast-text"></span></div>
 
 <div class="approved-overlay" id="approved-overlay">
   <div class="approved-card">
@@ -240,14 +332,17 @@
 // Session data — injected by server
 let SESSION_ID = '';
 let originalText = '';
+let originalHtml = '';   // HTML from docx (preserves bold/italic/underline/headings)
 let entities = [];       // [{type, text, start, end, score, verified, idx}]
 let removedIndices = new Set();
 let addedEntities = [];  // [{text, type, start, end}]
+let formatRuns = [];     // [{start, end, bold, italic, underline}]
+let blockMap = [];       // [{start, end, tag}] for paragraph/heading structure
+let collapsedFamilies = new Set();  // family keys that are collapsed in sidebar
 
 const API_BASE = '';  // same origin
 
 async function init() {
-  // Extract session_id from URL: /review/{session_id}
   const parts = window.location.pathname.split('/review/');
   SESSION_ID = parts[1] || '';
   if (!SESSION_ID) { document.getElementById('doc-content').textContent = 'No session ID'; return; }
@@ -258,10 +353,58 @@ async function init() {
     if (data.error) { document.getElementById('doc-content').textContent = data.error; return; }
 
     originalText = data.original_text;
+    originalHtml = data.original_html || '';
     entities = data.entities.map((e, i) => ({ ...e, idx: i }));
+
+    // Parse formatting from HTML if available
+    if (originalHtml) parseHtmlFormatting(originalHtml);
+
     render();
   } catch (err) {
     document.getElementById('doc-content').textContent = 'Failed to load review data: ' + err.message;
+  }
+}
+
+// Parse docx HTML to extract formatting runs + block structure mapped to originalText positions
+function parseHtmlFormatting(html) {
+  const temp = document.createElement('div');
+  temp.innerHTML = html;
+  formatRuns = [];
+  blockMap = [];
+  let charPos = 0;
+
+  for (const block of temp.children) {
+    const tag = block.tagName.toLowerCase();
+    const blockStart = charPos;
+
+    function walkNode(node, inherited) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.textContent;
+        if (text.length > 0) {
+          if (inherited.bold || inherited.italic || inherited.underline) {
+            formatRuns.push({ start: charPos, end: charPos + text.length, ...inherited });
+          }
+          charPos += text.length;
+        }
+        return;
+      }
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const t = node.tagName.toLowerCase();
+        if (t === 'br') {
+          charPos++; // matches \n in original_text
+          return;
+        }
+        const next = { ...inherited };
+        if (t === 'b' || t === 'strong') next.bold = true;
+        if (t === 'i' || t === 'em') next.italic = true;
+        if (t === 'u') next.underline = true;
+        for (const child of node.childNodes) walkNode(child, next);
+      }
+    }
+
+    walkNode(block, { bold: false, italic: false, underline: false });
+    blockMap.push({ start: blockStart, end: charPos, tag });
+    charPos++; // \n between paragraphs
   }
 }
 
@@ -281,6 +424,12 @@ function getTypeClass(type) {
   return 'type-OTHER';
 }
 
+// Create a CSS/attribute-safe group key (no quotes, special chars)
+function makeGroupKey(type, text) {
+  const norm = (text || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
+  return `${type}__${norm}`;
+}
+
 function render() {
   renderDocument();
   renderSidebar();
@@ -289,73 +438,271 @@ function render() {
 
 function renderDocument() {
   const container = document.getElementById('doc-content');
+  const hasHtml = formatRuns.length > 0 || blockMap.length > 0;
+  container.classList.toggle('html-mode', hasHtml);
+
   // Merge original + added entities, sort by start position
   const allEntities = [
     ...entities.filter(e => e.verified).map(e => ({ ...e, source: 'original' })),
     ...addedEntities.map((e, i) => ({ ...e, idx: `added_${i}`, source: 'added', score: 1.0 }))
   ].sort((a, b) => a.start - b.start);
 
-  let html = '';
-  let lastEnd = 0;
+  // Build a flat list of "segments" with formatting + entity info
+  // Each segment: {start, end, entity: null|obj, bold, italic, underline}
+  const segments = buildSegments(allEntities);
 
-  for (const e of allEntities) {
-    if (e.start < lastEnd) continue; // skip overlapping
-    // Text before entity
-    html += escapeHtml(originalText.slice(lastEnd, e.start));
-    // Entity span
-    const isRemoved = e.source === 'original' && removedIndices.has(e.idx);
-    const isAdded = e.source === 'added';
-    const cls = `entity ${getEntityClass(e.type)} ${isRemoved ? 'removed' : ''} ${isAdded ? 'entity-added' : ''}`;
-    const dataIdx = e.source === 'original' ? e.idx : e.idx;
-
-    html += `<span class="${cls}" data-idx="${dataIdx}" data-source="${e.source}" onclick="toggleEntity(this)">`;
-    html += escapeHtml(originalText.slice(e.start, e.end));
-    html += `<span class="entity-tooltip">`;
-    html += `<div class="tooltip-type">${e.type} &middot; ${(e.score * 100).toFixed(0)}%</div>`;
-    if (isRemoved) {
-      html += `<div class="tooltip-actions"><button class="tooltip-btn restore" onclick="event.stopPropagation(); restoreEntity(${e.idx})">Restore</button></div>`;
-    } else if (isAdded) {
-      html += `<div class="tooltip-actions"><button class="tooltip-btn remove" onclick="event.stopPropagation(); removeAdded(${parseInt(String(dataIdx).replace('added_',''))})">Remove</button></div>`;
-    } else {
-      html += `<div class="tooltip-actions"><button class="tooltip-btn remove" onclick="event.stopPropagation(); removeEntity(${e.idx})">Remove</button></div>`;
+  // If block structure available, wrap in block tags
+  if (hasHtml && blockMap.length > 0) {
+    let html = '';
+    for (const block of blockMap) {
+      html += `<${block.tag}>`;
+      html += renderSegmentsRange(segments, block.start, block.end);
+      html += `</${block.tag}>`;
     }
-    html += `</span></span>`;
-    lastEnd = e.end;
+    container.innerHTML = html;
+  } else {
+    container.innerHTML = renderSegmentsRange(segments, 0, originalText.length);
   }
-  // Remaining text
-  html += escapeHtml(originalText.slice(lastEnd));
-  container.innerHTML = html;
+}
+
+function buildSegments(allEntities) {
+  // Create breakpoints from entity boundaries + format run boundaries
+  const points = new Set([0, originalText.length]);
+  for (const e of allEntities) {
+    if (e.start >= 0) { points.add(e.start); points.add(e.end); }
+  }
+  for (const f of formatRuns) { points.add(f.start); points.add(f.end); }
+  const sorted = Array.from(points).sort((a, b) => a - b);
+
+  const segments = [];
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const start = sorted[i], end = sorted[i + 1];
+    if (start >= end) continue;
+    // Find entity covering this segment
+    const entity = allEntities.find(e => e.start <= start && end <= e.end);
+    // Find formatting
+    const fmt = formatRuns.find(f => f.start <= start && end <= f.end) || {};
+    segments.push({ start, end, entity, bold: !!fmt.bold, italic: !!fmt.italic, underline: !!fmt.underline });
+  }
+  return segments;
+}
+
+function renderSegmentsRange(segments, rangeStart, rangeEnd) {
+  let html = '';
+  let currentEntity = null;
+  for (const seg of segments) {
+    if (seg.end <= rangeStart || seg.start >= rangeEnd) continue;
+    const s = Math.max(seg.start, rangeStart);
+    const e = Math.min(seg.end, rangeEnd);
+    const text = escapeHtml(originalText.slice(s, e));
+
+    // Apply formatting tags
+    let formatted = text;
+    if (seg.bold) formatted = `<b>${formatted}</b>`;
+    if (seg.italic) formatted = `<i>${formatted}</i>`;
+    if (seg.underline) formatted = `<u>${formatted}</u>`;
+
+    if (seg.entity) {
+      // Open entity span at entity start
+      if (currentEntity !== seg.entity) {
+        if (currentEntity) html += currentEntity._tooltipHtml + `</span>`;  // close previous
+        const ent = seg.entity;
+        const isRemoved = ent.source === 'original' && removedIndices.has(ent.idx);
+        const isAdded = ent.source === 'added';
+        const cls = `entity ${getEntityClass(ent.type)} ${isRemoved ? 'removed' : ''} ${isAdded ? 'entity-added' : ''}`;
+        const groupKey = makeGroupKey(ent.type, ent.text);
+        const dataIdx = ent.idx;
+
+        const groupCount = ent.source === 'original'
+          ? entities.filter(x => x.verified && makeGroupKey(x.type, x.text) === groupKey).length
+          : 1;
+        const allLabel = groupCount > 1 ? ` all ${groupCount}` : '';
+
+        html += `<span class="${cls}" data-idx="${dataIdx}" data-source="${ent.source}" data-group-key="${groupKey}" onclick="toggleEntity(this)" onmouseenter="highlightGroup('${groupKey}')" onmouseleave="unhighlightGroup('${groupKey}')">`;
+        // We'll close with tooltip at entity end
+        currentEntity = seg.entity;
+        // Store tooltip info for closing
+        currentEntity._tooltipHtml = buildTooltipHtml(ent, isRemoved, isAdded, groupCount, allLabel, dataIdx);
+      }
+      html += formatted;
+    } else {
+      // Close entity if we were in one
+      if (currentEntity) {
+        html += currentEntity._tooltipHtml + `</span>`;
+        currentEntity = null;
+      }
+      html += formatted;
+    }
+  }
+  // Close any remaining entity
+  if (currentEntity) {
+    html += currentEntity._tooltipHtml + `</span>`;
+  }
+  return html;
+}
+
+function buildTooltipHtml(e, isRemoved, isAdded, groupCount, allLabel, dataIdx) {
+  const label = e.type.replace('_', ' ');
+  return `<span class="entity-tooltip">${label}</span>`;
+}
+
+// Build family structure: group entities by substring matching (like server's _get_or_create_placeholder)
+function buildFamilies(confirmedEntities) {
+  // families: [{type, rootText, rootNorm, members: [{text, norm, indices, score}]}]
+  const families = [];
+
+  for (const e of confirmedEntities) {
+    const norm = e.text.trim().toLowerCase();
+    const type = e.type;
+    // Try to find existing family
+    let found = null;
+    if (norm.length >= 4) {
+      for (const fam of families) {
+        if (fam.type !== type) continue;
+        // Substring match (like server) OR shared root word (first word >=4 chars)
+        if (fam.rootNorm.length >= 4 && (norm.includes(fam.rootNorm) || fam.rootNorm.includes(norm))) {
+          found = fam; break;
+        }
+        // Also match if first significant word is the same (e.g. "globaltech industries" / "globaltech ltd.")
+        const w1 = norm.split(/\s+/)[0], w2 = fam.rootNorm.split(/\s+/)[0];
+        if (w1.length >= 4 && w1 === w2) {
+          found = fam; break;
+        }
+      }
+    }
+
+    if (found) {
+      // Add to existing family
+      const existing = found.members.find(m => m.norm === norm);
+      if (existing) {
+        existing.indices.push(e.idx);
+      } else {
+        found.members.push({ text: e.text, norm, indices: [e.idx], score: e.score });
+        // If this norm is shorter, it becomes root (family root = shortest form)
+        if (norm.length < found.rootNorm.length) {
+          found.rootText = e.text;
+          found.rootNorm = norm;
+        }
+      }
+    } else {
+      // New family
+      families.push({
+        type, rootText: e.text, rootNorm: norm,
+        members: [{ text: e.text, norm, indices: [e.idx], score: e.score }],
+      });
+    }
+  }
+
+  // Sort members: root first, then alphabetically
+  for (const fam of families) {
+    fam.members.sort((a, b) => {
+      if (a.norm === fam.rootNorm) return -1;
+      if (b.norm === fam.rootNorm) return 1;
+      return a.text.localeCompare(b.text);
+    });
+  }
+  return families;
 }
 
 function renderSidebar() {
   const list = document.getElementById('entity-list');
   const confirmedEntities = entities.filter(e => e.verified);
-  let html = '';
+  const families = buildFamilies(confirmedEntities);
 
-  for (const e of confirmedEntities) {
-    const isRemoved = removedIndices.has(e.idx);
-    html += `<div class="entity-item ${getTypeClass(e.type)} ${isRemoved ? 'removed' : ''}" onclick="scrollToEntity(${e.idx})">`;
-    html += `<span class="idx">#${e.idx}</span>`;
-    html += `<span class="type-badge">${e.type}</span>`;
-    html += `<span class="text">${escapeHtml(e.text)}</span>`;
-    html += `<span class="score">${(e.score * 100).toFixed(0)}%</span>`;
+  if (families.length === 0 && addedEntities.length === 0) {
+    list.innerHTML = '<div style="padding:24px 16px;text-align:center;color:var(--text-secondary);font-size:13px;">No PII entities detected in this document.</div>';
+    return;
+  }
+
+  let html = '';
+  for (const fam of families) {
+    const allIndices = fam.members.flatMap(m => m.indices);
+    const totalCount = allIndices.length;
+    const allRemoved = allIndices.every(i => removedIndices.has(i));
+    const hasVariants = fam.members.length > 1;
+    const familyKey = makeGroupKey(fam.type, fam.rootText);
+    const isCollapsed = collapsedFamilies.has(familyKey);
+    const root = fam.members[0];
+    const firstIdx = root.indices[0];
+
+    // Root row
+    html += `<div class="entity-item ${getTypeClass(fam.type)} ${allRemoved ? 'removed' : ''}" data-group-key="${familyKey}" onclick="scrollToEntity(${firstIdx})" onmouseenter="highlightGroup('${familyKey}')" onmouseleave="unhighlightGroup('${familyKey}')">`;
+    if (hasVariants) {
+      html += `<span class="family-toggle ${isCollapsed ? 'collapsed' : ''}" onclick="event.stopPropagation(); toggleFamily('${familyKey}')">&#x25BC;</span>`;
+    }
+    html += `<span class="type-badge">${fam.type}</span>`;
+    html += `<span class="text">${escapeHtml(root.text)}</span>`;
+    if (totalCount > 1) html += `<span class="group-count">&times;${totalCount}</span>`;
+    html += `<span class="score">${(root.score * 100).toFixed(0)}%</span>`;
+    if (hasVariants) {
+      // Family root button — operates on ALL members
+      if (allRemoved) {
+        html += `<button class="action-btn restore-btn" title="Restore all" onclick="event.stopPropagation(); restoreFamilyAll([${allIndices.join(',')}])">&#x21A9;</button>`;
+      } else {
+        html += `<button class="action-btn remove-btn" title="Remove all" onclick="event.stopPropagation(); removeFamilyAll([${allIndices.join(',')}])">&#x2715;</button>`;
+      }
+    } else {
+      if (allRemoved) {
+        html += `<button class="action-btn restore-btn" title="Restore" onclick="event.stopPropagation(); restoreEntity(${firstIdx})">&#x21A9;</button>`;
+      } else {
+        html += `<button class="action-btn remove-btn" title="Remove" onclick="event.stopPropagation(); removeEntity(${firstIdx})">&#x2715;</button>`;
+      }
+    }
     html += `</div>`;
+
+    // Variant rows (if expanded and >1 member)
+    if (hasVariants && !isCollapsed) {
+      for (let i = 1; i < fam.members.length; i++) {
+        const m = fam.members[i];
+        const variantKey = makeGroupKey(fam.type, m.text);
+        const varRemoved = m.indices.every(idx => removedIndices.has(idx));
+        const varFirstIdx = m.indices[0];
+        html += `<div class="entity-item variant ${getTypeClass(fam.type)} ${varRemoved ? 'removed' : ''}" data-group-key="${variantKey}" onclick="scrollToEntity(${varFirstIdx})" onmouseenter="highlightGroup('${variantKey}')" onmouseleave="unhighlightGroup('${variantKey}')">`;
+        html += `<span class="type-badge" style="font-size:9px">${String.fromCharCode(96 + i)}</span>`;
+        html += `<span class="text">${escapeHtml(m.text)}</span>`;
+        if (m.indices.length > 1) html += `<span class="group-count">&times;${m.indices.length}</span>`;
+        html += `<span class="score">${(m.score * 100).toFixed(0)}%</span>`;
+        if (varRemoved) {
+          html += `<button class="action-btn restore-btn" title="Restore" onclick="event.stopPropagation(); restoreEntity(${varFirstIdx})">&#x21A9;</button>`;
+        } else {
+          html += `<button class="action-btn remove-btn" title="Remove" onclick="event.stopPropagation(); removeEntity(${varFirstIdx})">&#x2715;</button>`;
+        }
+        html += `</div>`;
+      }
+    }
   }
 
   if (addedEntities.length > 0) {
-    html += `<div class="sidebar-header" style="margin-top:8px;padding:8px 12px">Added by you</div>`;
+    const addedGroups = new Map();
     for (let i = 0; i < addedEntities.length; i++) {
       const e = addedEntities[i];
-      html += `<div class="entity-item ${getTypeClass(e.type)}">`;
+      const key = makeGroupKey(e.type, e.text);
+      if (!addedGroups.has(key)) {
+        addedGroups.set(key, { type: e.type, text: e.text, indices: [i] });
+      } else {
+        addedGroups.get(key).indices.push(i);
+      }
+    }
+    html += `<div class="sidebar-header" style="margin-top:8px;padding:8px 12px">Added by you</div>`;
+    for (const [key, group] of addedGroups) {
+      const count = group.indices.length;
+      html += `<div class="entity-item ${getTypeClass(group.type)}">`;
       html += `<span class="idx">+</span>`;
-      html += `<span class="type-badge">${e.type}</span>`;
-      html += `<span class="text">${escapeHtml(e.text)}</span>`;
-      html += `<span class="score" style="cursor:pointer;color:var(--danger)" onclick="removeAdded(${i})">&#x2715;</span>`;
+      html += `<span class="type-badge">${group.type}</span>`;
+      html += `<span class="text">${escapeHtml(group.text)}</span>`;
+      if (count > 1) html += `<span class="group-count">&times;${count}</span>`;
+      html += `<button class="action-btn remove-btn" title="Remove all" onclick="event.stopPropagation(); removeAddedGroup('${key}')">&#x2715;</button>`;
       html += `</div>`;
     }
   }
 
   list.innerHTML = html;
+}
+
+function toggleFamily(familyKey) {
+  if (collapsedFamilies.has(familyKey)) collapsedFamilies.delete(familyKey);
+  else collapsedFamilies.add(familyKey);
+  renderSidebar();
 }
 
 function updateStats() {
@@ -383,11 +730,14 @@ function removeEntity(idx) {
   if (entity) {
     const normText = entity.text.trim().toLowerCase();
     const type = entity.type;
+    let count = 0;
     for (const e of entities) {
       if (e.verified && e.text.trim().toLowerCase() === normText && e.type === type) {
         removedIndices.add(e.idx);
+        count++;
       }
     }
+    showToast(`Removed${count > 1 ? ` ${count} occurrences of` : ''} "${entity.text}"`, 'remove');
   } else {
     removedIndices.add(idx);
   }
@@ -400,15 +750,37 @@ function restoreEntity(idx) {
   if (entity) {
     const normText = entity.text.trim().toLowerCase();
     const type = entity.type;
+    let count = 0;
     for (const e of entities) {
       if (e.text.trim().toLowerCase() === normText && e.type === type) {
         removedIndices.delete(e.idx);
+        count++;
       }
     }
+    showToast(`Restored${count > 1 ? ` ${count} occurrences of` : ''} "${entity.text}"`, 'restore');
   } else {
     removedIndices.delete(idx);
   }
   render();
+}
+
+// Group highlight on hover
+function highlightGroup(groupKey) {
+  document.querySelectorAll(`[data-group-key="${groupKey}"]`).forEach(el => el.classList.add('group-hover'));
+}
+function unhighlightGroup(groupKey) {
+  document.querySelectorAll(`[data-group-key="${groupKey}"]`).forEach(el => el.classList.remove('group-hover'));
+}
+
+// Toast notification
+let toastTimer = null;
+function showToast(message, type) {
+  const toast = document.getElementById('toast');
+  toast.querySelector('.toast-icon').textContent = type === 'remove' ? '\u2796' : '\u2795';
+  toast.querySelector('.toast-text').textContent = message;
+  toast.classList.add('visible');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('visible'), 2500);
 }
 
 function removeAdded(idx) {
@@ -416,9 +788,29 @@ function removeAdded(idx) {
   render();
 }
 
+function removeAddedGroup(groupKey) {
+  addedEntities = addedEntities.filter(e => makeGroupKey(e.type, e.text) !== groupKey);
+  render();
+}
+
+function removeFamilyAll(indices) {
+  for (const idx of indices) removedIndices.add(idx);
+  showToast(`Removed ${indices.length} entities (all variants)`, 'remove');
+  render();
+}
+
+function restoreFamilyAll(indices) {
+  for (const idx of indices) removedIndices.delete(idx);
+  showToast(`Restored ${indices.length} entities (all variants)`, 'restore');
+  render();
+}
+
 function resetAll() {
+  if (removedIndices.size === 0 && addedEntities.length === 0) return;
+  if (!confirm('Reset all changes? This will restore all removed entities and discard added ones.')) return;
   removedIndices.clear();
   addedEntities = [];
+  showToast('All changes reset', 'restore');
   render();
 }
 
@@ -444,8 +836,8 @@ function showToolbarForSelection(e) {
     return;
   }
 
-  // Calculate start position by walking the text content
-  const start = findTextPosition(text);
+  // Calculate start position by walking the DOM to find offset in originalText
+  const start = findTextPositionFromRange(range, container, text);
   if (start === -1) {
     toolbar.classList.remove('visible');
     return;
@@ -453,10 +845,15 @@ function showToolbarForSelection(e) {
 
   pendingSelection = { text, start, end: start + text.length };
 
-  // Position toolbar near selection
+  // Position toolbar near selection, clamped to viewport
   const rect = range.getBoundingClientRect();
-  toolbar.style.left = `${rect.left + rect.width / 2 - 120}px`;
-  toolbar.style.top = `${rect.top - 44}px`;
+  const toolbarW = 260;
+  let left = rect.left + rect.width / 2 - toolbarW / 2;
+  let top = rect.top - 44;
+  left = Math.max(8, Math.min(left, window.innerWidth - toolbarW - 8));
+  if (top < 8) top = rect.bottom + 8;  // flip below if too close to top
+  toolbar.style.left = `${left}px`;
+  toolbar.style.top = `${top}px`;
   toolbar.classList.add('visible');
   toolbarShownAt = Date.now();
 }
@@ -469,20 +866,71 @@ document.addEventListener('dblclick', (e) => {
   setTimeout(() => showToolbarForSelection(e), 10);
 });
 
-function findTextPosition(selectedText) {
-  // Find position in the original text
-  const idx = originalText.indexOf(selectedText);
-  return idx;
+function findTextPositionFromRange(range, container, selectedText) {
+  // Walk visible text nodes (skip tooltips) to calculate character offset in originalText
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      // Skip text inside tooltips — they are not part of the document text
+      if (node.parentElement && node.parentElement.closest('.entity-tooltip')) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+  let charOffset = 0;
+  let node;
+  while ((node = walker.nextNode())) {
+    if (node === range.startContainer) {
+      const approxPos = charOffset + range.startOffset;
+      // Verify match at calculated position
+      if (originalText.substr(approxPos, selectedText.length) === selectedText) return approxPos;
+      // Search nearby (entity spans may shift offsets slightly)
+      const searchStart = Math.max(0, approxPos - 100);
+      const region = originalText.substring(searchStart, Math.min(originalText.length, approxPos + 100));
+      const localIdx = region.indexOf(selectedText);
+      if (localIdx !== -1) return searchStart + localIdx;
+      return originalText.indexOf(selectedText);
+    }
+    charOffset += node.textContent.length;
+  }
+  return originalText.indexOf(selectedText);
 }
 
 function addEntity(type) {
   if (!pendingSelection) return;
-  addedEntities.push({
-    text: pendingSelection.text,
-    type: type,
-    start: pendingSelection.start,
-    end: pendingSelection.end,
-  });
+  const searchText = pendingSelection.text;
+  const newLen = searchText.length;
+  let pos = 0;
+  let count = 0;
+  while ((pos = originalText.indexOf(searchText, pos)) !== -1) {
+    const newStart = pos, newEnd = pos + newLen;
+
+    // Check overlapping original entities
+    const overlappingOriginals = entities.filter(e =>
+      e.verified && !removedIndices.has(e.idx) && e.start < newEnd && e.end > newStart);
+
+    // Check overlapping added entities
+    const overlappingAdded = addedEntities.filter(e => e.start < newEnd && e.end > newStart);
+
+    // If any overlapping entity covers same or more text — skip this position
+    // (existing entity already covers it, don't remove-and-readd)
+    const blockedByExisting = overlappingOriginals.some(e => (e.end - e.start) >= newLen)
+      || overlappingAdded.some(e => (e.end - e.start) >= newLen);
+
+    if (blockedByExisting) {
+      pos += newLen;
+      continue;
+    }
+
+    // Remove overlapping entities that are shorter/equal (new entity supersedes them)
+    for (const e of overlappingOriginals) {
+      removedIndices.add(e.idx);
+    }
+    addedEntities = addedEntities.filter(e => !(e.start < newEnd && e.end > newStart));
+
+    addedEntities.push({ text: searchText, type, start: newStart, end: newEnd });
+    count++;
+    pos += newLen;
+  }
+  if (count > 1) showToast(`Added ${count} occurrences of "${searchText}"`, 'restore');
   pendingSelection = null;
   document.getElementById('selection-toolbar').classList.remove('visible');
   window.getSelection().removeAllRanges();

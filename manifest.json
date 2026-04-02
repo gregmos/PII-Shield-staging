@@ -44,7 +44,7 @@
       "type": "string",
       "title": "Minimum NER score",
       "description": "Minimum confidence threshold (0.0-1.0)",
-      "default": "0.35",
+      "default": "0.50",
       "required": false
     },
     "gliner_model": {
