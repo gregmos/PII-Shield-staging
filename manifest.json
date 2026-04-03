@@ -1,10 +1,10 @@
 {
-  "manifest_version": "0.3",
+  "dxt_version": "0.3",
   "name": "pii-shield",
   "display_name": "PII Shield",
-  "version": "6.0.0",
+  "version": "1.0.0",
   "description": "Anonymize PII in documents. GLiNER zero-shot NER for high-quality entity recognition in legal documents.",
-  "long_description": "PII Shield provides automated PII detection and anonymization for legal document analysis. v5.5 uses GLiNER (DeBERTa-v3 zero-shot NER) via Presidio's GLiNERRecognizer for high-quality named entity recognition — handles ALL-CAPS names, domain-specific company names, and legal document patterns. SpaCy handles tokenization, GLiNER handles NER. Falls back to SpaCy-only if GLiNER is unavailable. Also includes: fuzzy entity deduplication, prefix support for multi-file workflows, two-pass boundary cleanup with false-positive filtering, 17 EU pattern recognizers. Deanonymized output is written to local files only — PII never flows back through Claude.",
+  "long_description": "MCP server that anonymizes documents before Claude sees them and restores real data after analysis. PII never enters the API — only file paths and session IDs are exchanged. Uses GLiNER zero-shot NER for high-quality entity recognition in legal documents, with Human-in-the-Loop review via local web UI. Supports PDF, DOCX (with tracked changes), and plain text. Includes 17 EU pattern recognizers, entity deduplication, chunked processing for large documents, and full local audit logging.",
   "author": {
     "name": "Grigorii Moskalev",
     "url": "https://www.linkedin.com/in/grigorii-moskalev/"
@@ -21,6 +21,14 @@
         "PII_MIN_SCORE": "${user_config.pii_min_score}",
         "PII_GLINER_MODEL": "${user_config.gliner_model}",
         "PII_WORK_DIR": "${user_config.work_dir}"
+      },
+      "platform_overrides": {
+        "darwin": {
+          "command": "python3"
+        },
+        "linux": {
+          "command": "python3"
+        }
       }
     }
   },
@@ -35,7 +43,10 @@
     {"name": "scan_text", "description": "Detect PII without anonymizing (preview mode)"},
     {"name": "list_entities", "description": "Show status, supported types, and recent sessions"},
     {"name": "start_review", "description": "Start local review server and return URL for HITL verification. Does NOT open browser. PII stays on your machine."},
-    {"name": "get_review_status", "description": "Check if user approved the HITL review. Returns status and has_changes only (no PII or override details)."}
+    {"name": "get_review_status", "description": "Check if user approved the HITL review. Returns status and has_changes only (no PII or override details)."},
+    {"name": "anonymize_next_chunk", "description": "Process next chunk of a chunked anonymization session. Returns progress and partial result."},
+    {"name": "get_full_anonymized_text", "description": "Assemble all processed chunks and finalize the anonymization. Returns output_path and session_id."},
+    {"name": "resolve_path", "description": "Zero-config file path resolution. Finds a marker file on host via BFS to map VM paths to host paths."}
   ],
   "keywords": ["pii", "anonymize", "gdpr", "privacy", "legal", "presidio", "ner", "gliner", "zero-shot"],
   "license": "MIT",
@@ -51,7 +62,7 @@
       "type": "string",
       "title": "GLiNER NER model",
       "description": "HuggingFace GLiNER model name for zero-shot NER",
-      "default": "urchade/gliner_small-v2.1",
+      "default": "knowledgator/gliner-pii-base-v1.0",
       "required": false
     },
     "work_dir": {

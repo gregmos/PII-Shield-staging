@@ -36,7 +36,7 @@ PACKAGES = [
 ]
 
 SPACY_MODEL = "en_core_web_sm"
-GLINER_MODEL = "urchade/gliner_small-v2.1"
+GLINER_MODEL = "knowledgator/gliner-pii-base-v1.0"
 
 
 # ============================================================

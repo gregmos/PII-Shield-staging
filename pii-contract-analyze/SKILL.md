@@ -21,75 +21,65 @@ Anonymize → Work → Deanonymize → Deliver. Claude NEVER sees raw PII at any
 - If an anonymize tool times out or fails with a NON-"tool not found" error — retry once. If it still fails, tell the user PII Shield is unavailable and ask whether to proceed without anonymization or abort. NEVER fall back to reading the raw file.
 - **NEVER** use `anonymize_text` or `scan_text` — these take raw text as input which means PII passes through the API. The ONLY exception is if the user explicitly pastes text into the chat (PII is already in the conversation).
 
-## IMPORTANT: Tool invocation — deferred tools
+## Startup
 
-PII Shield tools load lazily ("deferred") and may NOT appear in Claude's active tool list immediately. **This does NOT mean they are unavailable.** They typically become available within 10–30 seconds. On first install, the server auto-installs packages and downloads the GLiNER NER model (~1 GB total), which can take 5–10 minutes. On subsequent starts (or if user pre-installed via setup script), the server loads models into memory (~1-2 minutes).
+PII Shield is an MCP extension that auto-installs its dependencies on first launch. On first use in a session, the server installs packages (~2-5 minutes on first launch) and loads NER models (~30-60 seconds on subsequent launches when packages are already installed).
 
-**CRITICAL**: Cowork refreshes its deferred tool list only when a new user message arrives. Long sleep-probe loops within a single Claude turn will NOT make tools appear. You MUST yield control to the user when tools are not yet available, so Cowork can refresh.
+**IMPORTANT**: PII Shield tools (`mcp__PII_Shield__*`) may NOT appear in your available tools immediately. On first launch, the server installs heavy dependencies (PyTorch, spaCy, GLiNER) which takes several minutes. This is NORMAL. Do NOT conclude that PII Shield is "not installed" or "not connected". Do NOT tell the user it will take "30 seconds" — first-time installation takes 2-5 minutes.
 
-### Warm-up sequence (MANDATORY before any anonymization call)
+### Startup procedure
 
-**Phase A — Quick probes (~30s, handles the case when tools load fast):**
+**Step 1 — Do prep work FIRST** (gives the server time to start):
+- Identify the file(s) to process and determine the mode (MEMO, REDLINE, etc.)
+- Create the marker file for path resolution (see "How to determine host file path")
+- Plan your analysis approach
+- This prep work takes ~15-30 seconds — usually enough for the server to finish loading
 
-1. **Probe 1**: Call `mcp__PII_Shield__list_entities`.
-   - If `"status": "ready"` → **proceed to anonymization**.
-   - If `"status": "loading"` → go to **Phase C** (wait for install).
-   - If fails ("No such tool") → do useful prep work (create TodoList, detect mode from user's request).
-2. `sleep 10` → **Probe 2**: Call `mcp__PII_Shield__list_entities`.
-   - If success → proceed / handle loading as above.
-   - If fails → do more prep work (check uploaded file metadata, plan analysis structure).
-3. `sleep 10` → **Probe 3**: Call `mcp__PII_Shield__list_entities`.
-   - If success → proceed / handle loading as above.
-   - If fails → go to **Phase B**.
+**Step 2 — Check PII Shield readiness** (after prep work):
+1. Call `mcp__PII_Shield__list_entities`.
+   - If `"status": "ready"` — proceed to anonymization.
+   - If `"status": "loading"` — tell the user what's happening (show `message` field, e.g. "Installing dependencies..." or "Loading GLiNER model..."). Then **wait `retry_after_sec` seconds** (use `sleep` command), then call `list_entities` again. Repeat up to 10 times. Show progress updates to the user when the `message` changes. The server returns `retry_after_sec` dynamically: ~25 seconds during the first 3 minutes of boot, then ~10 seconds after.
+   - If `"status": "error"` — report the error to the user and ask them to restart PII Shield extension.
+2. If the tool is not found ("No such tool" error) — this means tools haven't appeared yet:
+   - Tell user: **"PII Shield is still starting up. Please send any message so I can connect."**
+   - **STOP your turn and wait** for user's next message. After they respond, retry from step 1.
 
-**Phase B — Ask user for a message to activate tools:**
+**RULES**:
+- "loading" status → use `sleep` for `retry_after_sec` seconds between retries, show progress to user
+- "No such tool" → STOP, ask user to send message (sleep won't help — tool list only refreshes on new message)
+- Do NOT skip PII Shield. Do NOT offer to "work without anonymization".
 
-After 3 quick probes failed, Cowork hasn't loaded the tool definitions yet. Cowork refreshes its tool list ONLY when a new user message arrives. We must yield control.
+### Long document handling (chunked processing)
 
-4. Tell user: **"PII Shield tools are loading. Please send me any message (e.g., 'go') so I can connect to PII Shield and start the analysis."**
-   **STOP. Do NOT sleep or retry. Wait for user's next message.**
+For documents >15K characters, `anonymize_file` returns `"status": "chunked"` instead of processing everything at once. This prevents timeout on large documents.
 
-**Phase C — After user sends a message (or after "loading" detected in Phase A):**
+**Chunked processing flow:**
+1. `anonymize_file(path)` returns `session_id`, `total_chunks`, `processed_chunks: 1`
+2. Loop: call `anonymize_next_chunk(session_id)` until `status` is `"complete"`
+   - Show progress to user after each chunk: "Anonymizing... [chunk X/Y]"
+3. Call `get_full_anonymized_text(session_id)` to finalize — returns `output_path`, `session_id`, `output_dir`
+4. Continue with the normal pipeline (HITL review, analysis, etc.) using the returned values
 
-5. Call `mcp__PII_Shield__list_entities`.
-   - If `"status": "ready"` → **proceed to anonymization**.
-   - If `"status": "loading"` → server is running but first-time install is in progress. Go to **Phase D**.
-   - If fails ("No such tool") → tools still not visible. `sleep 30` → probe again. If still fails → `sleep 30` → probe. If still fails → tell user: **"PII Shield is still connecting. Please send one more message."** → STOP. Go to Phase E on next message.
+For short documents (<15K chars), `anonymize_file` processes everything in one call — no chunking needed.
 
-**Phase D — Wait for server to become ready (when server reports "loading"):**
+### File path resolution (zero-config, automatic)
 
-The server is loading. Check the `"phase"` field to determine what's happening:
-- `"phase": "packages"` = installing pip packages (first install, ~5-10 min)
-- `"phase": "models"` = downloading/loading AI models (~1-3 min)
-- `"phase": "engine"` = initializing PII engine (~30-60s)
+MCP tools run on the HOST, not in the VM. VM paths don't exist on the host. To resolve the correct host path:
 
-6. Tell user based on phase:
-   - If `packages` phase: **"PII Shield is installing dependencies for the first time. This is a one-time setup (~5-10 minutes). I'll keep you updated."**
-   - If `models` or `engine` phase: **"PII Shield is loading AI models (~1-2 minutes). Please wait."**
-7. Enter a wait loop (max 15 iterations):
-   - `sleep 30` → Probe `list_entities`.
-   - If `"status": "ready"` → **proceed to anonymization**.
-   - If `"status": "loading"` → show the server's `"message"` field to the user. Continue loop.
-   - If fails → show a generic progress message. Continue loop.
-8. After 15 iterations: tell user **"PII Shield is taking longer than expected. Please send 'go' to retry."** → STOP. Wait for user message, then go to Phase C.
+1. Determine the target filename and its directory inside the VM
+2. Create a unique marker file NEXT TO the target file:
+   ```
+   MARKER=".pii_marker_$(openssl rand -hex 4)"
+   touch /path/to/folder/$MARKER
+   ```
+3. Call `resolve_path(filename="contract.docx", marker=".pii_marker_a1b2c3d4")`
+   The server finds the marker on host via fast BFS search, returns `host_path`.
+   The marker is auto-deleted by the server.
+4. Call `anonymize_file(host_path)`
 
-**Phase E — Second user message (if Phase C didn't work):**
+This works with ANY connected folder location — no configuration needed. The mapping is cached, so subsequent files in the same directory resolve instantly.
 
-9. Call `mcp__PII_Shield__list_entities`.
-   - If `"status": "ready"` → **proceed to anonymization**.
-   - If `"status": "loading"` → go to **Phase D**.
-   - If fails → `sleep 30` → probe → `sleep 30` → probe.
-     If still fails → report error: **"PII Shield tools could not be loaded. Please check: (1) Python 3.10+ is in PATH, (2) PII Shield extension is enabled in Settings > Extensions, (3) try restarting the conversation. Or I can proceed without anonymization if you prefer."**
-
-**Key rules**:
-- Do NOT call `anonymize_file` until `list_entities` has succeeded with `"status": "ready"`.
-- "No such tool available" = Cowork hasn't loaded the tools yet. Yield control to the user so Cowork can refresh.
-- `"status": "loading"` = server is running, loading in progress. Wait in Phase D.
-- Non-"tool not found" errors (timeouts, server errors) = retry the specific tool once, then report.
-- If user says "try again" / "check again" / "ready" / "go" — call `list_entities` immediately.
-- NEVER read the source file directly. If tools are unavailable, WAIT — do not bypass anonymization.
-- **Do NOT try to read files on the host machine** (like `~/.pii_shield/status.json`) — Cowork runs in a sandbox and cannot access the host filesystem outside of mounted paths.
-- While waiting for PII Shield, do useful prep work in parallel: plan analysis structure, read skill instructions, detect mode from user's request. Do NOT extract text from files — this leaks PII into Claude's context.
+**Fallback**: If `resolve_path` fails, use `find_file(filename)` (requires configured work_dir) or ask the user for the full host path.
 
 All PII Shield tools are registered as MCP tools with prefix `mcp__PII_Shield__`.
 
@@ -97,12 +87,15 @@ All PII Shield tools are registered as MCP tools with prefix `mcp__PII_Shield__`
 
 | MCP tool name | Parameters | Returns to Claude |
 |---|---|---|
-| `mcp__PII_Shield__anonymize_file` | file_path, language, prefix, **review_session_id** | output_path (.txt) + session_id + output_dir + docx_output_path (.docx, for .docx input only). All output files are in `output_dir` (a `pii_shield_<session_id>/` subfolder next to the source file). (**text NOT in response — read from output_path**) |
+| `mcp__PII_Shield__anonymize_file` | file_path, language, prefix, **review_session_id** | output_path (.txt) + session_id + output_dir + docx_output_path (.docx, for .docx input only). For long docs: returns `status: "chunked"` with session_id and total_chunks. |
+| `mcp__PII_Shield__anonymize_next_chunk` | session_id | Progress: processed_chunks, total_chunks, progress_pct, entities_so_far |
+| `mcp__PII_Shield__get_full_anonymized_text` | session_id | output_path, session_id, output_dir, docx_output_path (same as anonymize_file) |
+| `mcp__PII_Shield__resolve_path` | filename, marker, vm_dir | host_path, host_dir (zero-config VM-to-host path resolution) |
 | `mcp__PII_Shield__deanonymize_text` | text, session_id, output_path | **File path only** (takes anonymized text, writes deanonymized file) |
 | `mcp__PII_Shield__deanonymize_docx` | file_path, session_id | **File path only** |
 | `mcp__PII_Shield__get_mapping` | session_id | Placeholder keys + types only |
 | `mcp__PII_Shield__list_entities` | — | Server status and config |
-| `mcp__PII_Shield__find_file` | filename | Full host path(s) — searches configured work_dir only |
+| `mcp__PII_Shield__find_file` | filename | Full host path(s) — searches configured work_dir only (fallback) |
 | `mcp__PII_Shield__start_review` | session_id | URL of local review page |
 | `mcp__PII_Shield__get_review_status` | session_id | **status + has_changes only** (no PII or override details) |
 
@@ -111,11 +104,11 @@ All PII Shield tools are registered as MCP tools with prefix `mcp__PII_Shield__`
 - `scan_text` — sends raw text through the API.
 - `anonymize_docx` — use `anonymize_file` instead (handles .docx automatically).
 
-**`prefix` parameter** (new in v5.0): Use for multi-file workflows to avoid placeholder collisions. Example: `prefix="D1"` → `<D1_ORG_1>`, `prefix="D2"` → `<D2_ORG_1>`. Each file gets its own prefix and session_id.
+**`prefix` parameter**: Use for multi-file workflows to avoid placeholder collisions. Example: `prefix="D1"` → `<D1_ORG_1>`, `prefix="D2"` → `<D2_ORG_1>`. Each file gets its own prefix and session_id.
 
-**`review_session_id` parameter** (new in v6.0): Pass the `session_id` from a previous `anonymize_file` call after HITL review. The server fetches the user's overrides internally and re-anonymizes. PII never passes through Claude — no entity text, no override JSON.
+**`review_session_id` parameter**: Pass the `session_id` from a previous `anonymize_file` call after HITL review. The server fetches the user's overrides internally and re-anonymizes. PII never passes through Claude — no entity text, no override JSON.
 
-**Preferred approach**: Always use `anonymize_file(file_path)` — only the file path (a short string) passes through the API. The MCP server on the host reads and anonymizes the file locally. Use `find_file(filename)` to resolve the host path from a filename visible in the sandbox.
+**Preferred approach**: Always use `anonymize_file(file_path)` — only the file path (a short string) passes through the API. The MCP server on the host reads and anonymizes the file locally. Use `resolve_path(filename, marker)` to resolve the host path (see "File path resolution" section above), or `find_file(filename)` as fallback.
 
 ## Skip mode
 
@@ -186,7 +179,8 @@ Full legal memorandum with risk assessment. The default mode.
 
 ```
 1. Warm-up: list_entities() → confirm tools loaded
-2. find_file(filename) → host path (or ask user if not found)
+2. Resolve host path: create marker → resolve_path(filename, marker) → host_path
+   (See "File path resolution" section. Fallback: find_file or ask user)
 3. anonymize_file(file_path) → output_path, session_id, output_dir
    All output files are in output_dir (pii_shield_<session_id>/ subfolder).
    Read the anonymized text from output_path (the file on disk)
@@ -213,7 +207,8 @@ Apply tracked changes to make the contract more favorable for the specified part
 
 ```
 1. Warm-up: list_entities() → confirm tools loaded
-2. find_file(filename) → host path (or ask user if not found)
+2. Resolve host path: create marker → resolve_path(filename, marker) → host_path
+   (See "File path resolution" section. Fallback: find_file or ask user)
 3. anonymize_file(file_path) → output_path (.txt), docx_output_path (.docx), output_dir, session_id
    All output files are in output_dir (a pii_shield_<session_id>/ subfolder next to the source file).
    Read the anonymized text from output_path for analysis.
@@ -268,7 +263,8 @@ Concise document summary — key parties, subject, term, financial terms, notabl
 
 ```
 1. Warm-up: list_entities() → confirm tools loaded
-2. find_file(filename) → host path (or ask user if not found)
+2. Resolve host path: create marker → resolve_path(filename, marker) → host_path
+   (See "File path resolution" section. Fallback: find_file or ask user)
 3. anonymize_file(file_path) → output_path, session_id, output_dir
    All output files are in output_dir (pii_shield_<session_id>/ subfolder).
    Read the anonymized text from output_path (the file on disk)
@@ -299,7 +295,8 @@ Compare two versions of a document or two related documents. Show what changed.
 
 ```
 1. Warm-up: list_entities() → confirm tools loaded
-2. find_file(filename_1), find_file(filename_2) → host paths (or ask user if not found)
+2. Resolve host paths: create marker → resolve_path for each file → host_path_1, host_path_2
+   (See "File path resolution" section. Fallback: find_file or ask user)
 3. anonymize_file(file_path_1, prefix="D1") → output_path_1, session_id_1, output_dir_1
    Read the anonymized text from output_path_1
 4. anonymize_file(file_path_2, prefix="D2") → output_path_2, session_id_2, output_dir_2
@@ -354,7 +351,8 @@ Just anonymize and return the anonymized file. No analysis.
 
 ```
 1. Warm-up: list_entities() → confirm tools loaded
-2. find_file(filename) → host path (or ask user if not found)
+2. Resolve host path: create marker → resolve_path(filename, marker) → host_path
+   (See "File path resolution" section. Fallback: find_file or ask user)
 3. anonymize_file(file_path) → output_path, session_id, output_dir
    All output files are in output_dir (pii_shield_<session_id>/ subfolder).
    Read the anonymized text from output_path (the file on disk)
@@ -376,27 +374,24 @@ Just anonymize and return the anonymized file. No analysis.
 
 PII Shield runs on the **HOST machine**, not in the Cowork sandbox. `anonymize_file` needs the Windows/Mac/Linux host path.
 
-**Step 1 — VirtioFS mount info** (primary method, no user interaction):
+**Step 1 — Marker-based resolution** (primary method, zero-config):
+Create a unique marker file next to the target file, then call `resolve_path`:
+```bash
+MARKER=".pii_marker_$(openssl rand -hex 4)"
+touch /path/to/folder/$MARKER
+```
+Then: `resolve_path(filename="contract.docx", marker=$MARKER)` returns the host path. Marker is auto-deleted. The mapping is cached for the session.
+
+**Step 2 — VirtioFS mount info** (alternative, no user interaction):
 Check the VirtioFS mount to derive the host path:
 ```bash
 ls /mnt/.virtiofs-root/shared/
 ```
-This shows the host user's home folder structure (e.g., `Downloads`, `Documents`, `Desktop`). The connected folder appears here.
+This shows the host user's home folder structure. Derive the host path from the mount structure.
 
-Example: if the connected folder is at `/sessions/{name}/mnt/testtest/` and you see `/mnt/.virtiofs-root/shared/Downloads/testtest/`, the host path is:
-```
-C:\Users\{username}\Downloads\testtest\filename.pdf
-```
-To get the Windows username, check the mount structure or use the pattern from the path.
+**Step 3 — Use `find_file(filename)`** (fallback): Searches the configured working directory (Settings > Extensions > PII Shield). If found, use the returned path.
 
-You can also try the Windows-style path directly — it often works in the sandbox:
-```bash
-file "C:\Users\User\Downloads\testtest\contract.pdf"
-```
-
-**Step 2 — Use `find_file(filename)`** (fallback): Searches the configured working directory (Settings > Extensions > PII Shield). If found, use the returned path.
-
-**Step 3 — Ask the user** (last resort): If VirtioFS mount info is not available and `find_file` fails, ask the user for the full host path.
+**Step 4 — Ask the user** (last resort): If all above fail, ask the user for the full host path.
 
 **Step 4 — Use `output_dir` for all subsequent files**:
 - `anonymize_file` returns `output_dir` like `C:\Users\User\Downloads\testtest\pii_shield_a1b2c3d4e5f6\`

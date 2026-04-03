@@ -67,7 +67,7 @@ echo.
 echo   [4/4] Downloading GLiNER NER model (~200 MB)...
 echo         This takes 2-3 minutes on a fast connection.
 echo.
-%PYTHON% -c "from gliner import GLiNER; GLiNER.from_pretrained('urchade/gliner_small-v2.1'); print('  [OK] GLiNER model downloaded.')"
+%PYTHON% -c "from gliner import GLiNER; GLiNER.from_pretrained('knowledgator/gliner-pii-base-v1.0'); print('  [OK] GLiNER model downloaded.')"
 if %ERRORLEVEL% neq 0 (
     echo   WARNING: GLiNER model download failed. It will auto-download on first use.
 )
@@ -79,7 +79,7 @@ echo   Setup complete!
 echo   ==================================
 echo.
 echo   You can now install PII Shield in Claude Desktop:
-echo     1. Install pii-shield-v5.5.0.mcpb  (Settings ^> Extensions ^> Install extension)
+echo     1. Install pii-shield-v1.0.0.dxt  (Settings ^> Extensions ^> Install extension)
 echo     2. Upload pii-contract-analyze.skill (Customize ^> Skills ^> Upload a skill)
 echo.
 echo   Everything will start instantly - no more waiting!

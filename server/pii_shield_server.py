@@ -1,10 +1,10 @@
 """
-PII Shield MCP Server v6.0.0
+PII Shield MCP Server v1.0.0
 ==============================
-Cowork-only. NER-only mode (no LLM dependency).
-  - NER backend: Presidio TransformersNlpEngine (dslim/bert-base-NER) with SpaCy tokenization
-  - High-quality BERT NER via Presidio's native transformer pipeline
-  - Self-bootstrapping: auto-installs missing packages on first run
+NER-only mode (no LLM dependency).
+  - NER backend: GLiNER (knowledgator/gliner-pii-base-v1.0) via Presidio with SpaCy tokenization
+  - High-quality PII-tuned NER via Presidio's GLiNERRecognizer
+  - Dependencies managed by UV (pyproject.toml)
   - DRY: single detect() used by both text and docx paths
   - TTL: mappings auto-cleaned after 7 days
   - Unified anonymize_file: routes .docx/.txt/.pdf automatically
@@ -20,59 +20,33 @@ Tools:
 """
 
 # ============================================================
-# Self-bootstrap: three-phase progressive installation
+# Background model loading  (v1.0 — lifespan + anyio.to_thread)
 #
-#   Phase 1 (synchronous, ~2s):  install ONLY mcp — so the server can start
-#   Phase 2 (background thread): install all heavy packages (torch, presidio, etc.)
-#   Phase 3 (background thread): download AI models (spacy, bert-base-NER)
+#   mcp.run() blocks plain threading.Thread on Windows (stdin read holds GIL).
+#   Fix: use FastMCP lifespan context manager + anyio.to_thread.run_sync()
+#   which runs in anyio's managed thread pool — no deadlock.
 #
-# Server starts accepting MCP connections after Phase 1 (~2 seconds).
-# Tools respond with installation progress until Phase 2+3 complete.
-# No timeouts, no manual setup scripts needed.
+# Server starts accepting MCP connections immediately.
+# Tools respond with loading progress until models are ready.
 # ============================================================
 import subprocess
 import sys
 import threading
 import logging as _boot_log
+import time as _time_boot
+import os as _os_boot
+from contextlib import asynccontextmanager
 
 _boot_log.basicConfig(level=_boot_log.INFO, format="%(asctime)s [PII-Shield] %(message)s", stream=sys.stderr)
 _blog = _boot_log.getLogger("pii-shield-bootstrap")
 
-_GLINER_MODEL = "urchade/gliner_small-v2.1"
+_GLINER_MODEL = "knowledgator/gliner-pii-base-v1.0"
 
-# Bootstrap state — read by tools to report progress
-_bootstrap_phase = "starting"    # starting → packages → models → ready / error
-_bootstrap_detail = ""           # human-readable progress detail
-_bootstrap_done = False
-_bootstrap_error = None
-_bootstrap_start_time = None     # set when bootstrap begins
+# --- Model loading state ---
+_engine_ready = threading.Event()
+_boot_progress = {"phase": "starting", "message": "PII Shield is starting up...", "pct": 0, "start": None}
+_boot_error = None
 
-# --- Status file for Cowork Skill warm-up ---
-import json as _json_boot
-from pathlib import Path as _BootPath
-
-_STATUS_DIR = _BootPath.home() / ".pii_shield"
-_STATUS_FILE = _STATUS_DIR / "status.json"
-
-
-def _write_status(phase, detail="", progress_pct=0):
-    """Write bootstrap status to ~/.pii_shield/status.json for Skill warm-up monitoring."""
-    import time as _t
-    try:
-        _STATUS_DIR.mkdir(parents=True, exist_ok=True)
-        elapsed = round(_t.time() - _bootstrap_start_time, 1) if _bootstrap_start_time else 0
-        _STATUS_FILE.write_text(_json_boot.dumps({
-            "phase": phase,
-            "message": detail,
-            "progress_pct": progress_pct,
-            "elapsed_seconds": elapsed,
-            "timestamp": _t.time(),
-        }, indent=2), encoding="utf-8")
-    except Exception:
-        pass  # non-critical, don't crash bootstrap
-
-# Packages split into phases: MCP first (tiny), then everything else (heavy)
-_MCP_PACKAGE = ("mcp", "mcp[cli]>=1.0.0")
 _HEAVY_PACKAGES = [
     ("presidio_analyzer", "presidio-analyzer>=2.2.355"),
     ("spacy",             "spacy>=3.7.0"),
@@ -83,155 +57,197 @@ _HEAVY_PACKAGES = [
     ("gliner",            "gliner>=0.2.7"),
 ]
 
+# --- Boot benchmark cache for accurate ETA ---
+_BENCH_FILE = _os_boot.path.join(_os_boot.path.expanduser("~"), ".pii_shield", "boot_benchmark.json")
 
-def _install_if_missing(packages):
-    """Install missing pip packages. Returns list of installed specs."""
+
+def _load_boot_benchmark():
+    try:
+        import json as _j
+        with open(_BENCH_FILE, "r") as f:
+            return _j.load(f)
+    except Exception:
+        return {}
+
+
+def _save_boot_benchmark(timings):
+    try:
+        import json as _j
+        _os_boot.makedirs(_os_boot.path.dirname(_BENCH_FILE), exist_ok=True)
+        with open(_BENCH_FILE, "w") as f:
+            _j.dump(timings, f)
+    except Exception:
+        pass
+
+
+def _all_deps_importable():
+    """Quick check via find_spec (no import lock, no deadlock risk)."""
+    import importlib.util
+    for import_name, _ in _HEAVY_PACKAGES:
+        if importlib.util.find_spec(import_name) is None:
+            return False
+    return True
+
+
+def _pip_install(packages):
+    """Install missing pip packages silently. Returns list of installed specs."""
     missing = []
     for import_name, pip_spec in packages:
         try:
             __import__(import_name)
         except ImportError:
             missing.append(pip_spec)
-    if missing:
-        _blog.info(f"Installing: {missing}")
-        # Fully detach pip from parent's stdio to prevent hanging in Cowork.
-        # On Windows, CREATE_NO_WINDOW prevents console inheritance issues.
-        import os as _os
-        _pip_dir = _os.path.join(_os.path.expanduser("~"), ".pii_shield")
-        _os.makedirs(_pip_dir, exist_ok=True)
-        _pip_log = _os.path.join(_pip_dir, "pip_install.log")
-        _cflags = 0
-        if sys.platform == "win32":
-            _cflags = subprocess.CREATE_NO_WINDOW
-        with open(_pip_log, "a") as _lf:
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "--quiet"] + missing,
-                stdin=subprocess.DEVNULL, stdout=_lf, stderr=_lf,
-                creationflags=_cflags,
-            )
+    if not missing:
+        return []
+    _blog.info(f"Installing: {missing}")
+    log_dir = _os_boot.path.join(_os_boot.path.expanduser("~"), ".pii_shield")
+    _os_boot.makedirs(log_dir, exist_ok=True)
+    log_file = _os_boot.path.join(log_dir, "pip_install.log")
+    cflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    with open(log_file, "a") as lf:
+        subprocess.call(
+            [sys.executable, "-m", "pip", "install", "--quiet"] + missing,
+            stdin=subprocess.DEVNULL, stdout=lf, stderr=lf,
+            creationflags=cflags,
+        )
+    # Verify imports — pip may return non-zero despite success (warnings count as errors)
+    still_missing = []
+    for import_name, pip_spec in packages:
+        try:
+            __import__(import_name)
+        except ImportError:
+            still_missing.append(pip_spec)
+    if still_missing:
+        raise RuntimeError(f"Failed to install: {still_missing}. Check {log_file}")
     return missing
 
 
-def _download_models():
-    """Download SpaCy + transformer models if not cached."""
-    import os
+def _sync_model_load():
+    """Heavy init: install deps, load models, init engine. Runs via anyio.to_thread."""
+    global _boot_error
+    _boot_progress["start"] = _time_boot.monotonic()
+    bench = _load_boot_benchmark()
+    timings = {}
+    MAX_RETRIES = 3
 
-    # SpaCy model
+    for attempt in range(1, MAX_RETRIES + 1):
+        _boot_error = None
+        try:
+            return _sync_model_load_inner(bench, timings)
+        except OSError as e:
+            # Transient errors: DLL lock (WinError 32), file busy, etc.
+            if attempt < MAX_RETRIES:
+                _blog.warning(f"Attempt {attempt} failed (retrying in 10s): {e}")
+                _boot_progress.update(phase="retry", message=f"Transient error, retrying ({attempt}/{MAX_RETRIES})...", pct=5)
+                _time_boot.sleep(10)
+            else:
+                raise
+
+
+def _sync_model_load_inner(bench, timings):
+    """Core init logic. Called by _sync_model_load with retry wrapper."""
+    global _boot_error
+
     try:
+        # --- Quick-init vs slow path ---
+        if _all_deps_importable():
+            _blog.info("Quick-init: all packages present, skipping pip checks")
+            _boot_progress.update(phase="models", message="All deps present, loading models...", pct=20)
+        else:
+            _boot_progress.update(phase="packages", message="Installing missing dependencies...", pct=5)
+            _blog.info("Slow path: installing missing packages...")
+            installed = _pip_install(_HEAVY_PACKAGES)
+            if installed:
+                _boot_progress.update(message=f"Installed {len(installed)} packages.", pct=20)
+                _blog.info(f"Installed {len(installed)} packages")
+
+        # --- SpaCy tokenizer ---
+        eta_spacy = bench.get("spacy_sec", "?")
+        _boot_progress.update(phase="models", message=f"Loading SpaCy tokenizer... (prev: {eta_spacy}s)", pct=30)
+        _blog.info("Loading SpaCy tokenizer...")
+        t0 = _time_boot.monotonic()
         import spacy
         try:
             spacy.load("en_core_web_sm")
-            _blog.info("SpaCy model: cached")
         except OSError:
-            _blog.info("SpaCy model: downloading...")
-            _pip_log = os.path.join(os.path.expanduser("~"), ".pii_shield", "pip_install.log")
-            with open(_pip_log, "a") as _lf:
-                _cflags = 0
-                if sys.platform == "win32":
-                    _cflags = subprocess.CREATE_NO_WINDOW
-                subprocess.check_call(
-                    [sys.executable, "-m", "spacy", "download", "en_core_web_sm"],
-                    stdin=subprocess.DEVNULL, stdout=_lf, stderr=_lf,
-                    creationflags=_cflags,
-                )
-    except Exception as e:
-        _blog.warning(f"SpaCy model: {e}")
+            _blog.info("SpaCy model not found, downloading...")
+            cflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            subprocess.check_call(
+                [sys.executable, "-m", "spacy", "download", "en_core_web_sm"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=cflags,
+            )
+            spacy.load("en_core_web_sm")
+        timings["spacy_sec"] = round(_time_boot.monotonic() - t0, 1)
+        _blog.info(f"SpaCy loaded in {timings['spacy_sec']}s")
 
-    # GLiNER model (with retries)
-    try:
-        gliner_model = os.environ.get("PII_GLINER_MODEL", _GLINER_MODEL)
-        _blog.info(f"GLiNER model {gliner_model}: checking cache...")
-        _write_status("models", f"Downloading GLiNER NER model ({gliner_model})... ~900 MB", 75)
+        # --- GLiNER NER model ---
+        gliner_model = _os_boot.environ.get("PII_GLINER_MODEL", _GLINER_MODEL)
+        eta_gliner = bench.get("gliner_sec", "?")
+        _boot_progress.update(phase="models", message=f"Loading GLiNER ({gliner_model})... (prev: {eta_gliner}s)", pct=55)
+        _blog.info(f"Loading GLiNER model: {gliner_model}")
+        t0 = _time_boot.monotonic()
         from gliner import GLiNER
-        _retries = [0, 10, 30, 60]
-        for _attempt, _delay in enumerate(_retries):
-            if _delay > 0:
-                _blog.info(f"Retry {_attempt}/{len(_retries)-1} in {_delay}s...")
-                import time as _t; _t.sleep(_delay)
-            try:
-                GLiNER.from_pretrained(gliner_model)
-                _blog.info(f"GLiNER model {gliner_model}: ready")
-                break
-            except Exception as _dl_err:
-                _blog.warning(f"GLiNER download attempt {_attempt+1} failed: {_dl_err}")
-                if _attempt == len(_retries) - 1:
-                    raise
-    except Exception as e:
-        _blog.warning(f"GLiNER model download failed (will retry on first use): {e}")
+        GLiNER.from_pretrained(gliner_model)
+        timings["gliner_sec"] = round(_time_boot.monotonic() - t0, 1)
+        _blog.info(f"GLiNER loaded in {timings['gliner_sec']}s")
 
-
-# --- Phase 1 (synchronous): install ONLY mcp so FastMCP server can start ---
-# With CREATE_NO_WINDOW + stdin=DEVNULL, pip won't hang in Cowork.
-# Takes ~20s on first install; Cowork waits up to 60s for handshake.
-import time as _time_boot
-_bootstrap_start_time = _time_boot.time()
-_write_status("starting", "PII Shield is starting up...")
-try:
-    _install_if_missing([_MCP_PACKAGE])
-except Exception as _e:
-    _bootstrap_error = str(_e)
-    _blog.error(f"MCP install failed: {_e}")
-    _write_status("error", f"MCP install failed: {_e}")
-
-
-def _background_bootstrap():
-    """Phase 2+3: install heavy packages and download models in background."""
-    global _bootstrap_phase, _bootstrap_detail, _bootstrap_done, _bootstrap_error
-    try:
-        # Phase 2: check/install heavy packages
-        _bootstrap_phase = "packages"
-        _blog.info("Phase 2: checking packages...")
-        _write_status("packages", "Checking dependencies...", 10)
-        installed = _install_if_missing(_HEAVY_PACKAGES)
-        if installed:
-            _bootstrap_detail = "Installing dependencies (PyTorch, Presidio, SpaCy)... This takes 5-10 min on first run."
-            _write_status("packages", _bootstrap_detail, 20)
-            _blog.info(f"Phase 2 complete: installed {len(installed)} packages")
-        else:
-            _blog.info("Phase 2: all packages already installed")
-
-        # Phase 3: load models into memory (required — GLiNER takes ~30-60s to load)
-        _bootstrap_phase = "models"
-        _bootstrap_detail = "Loading AI models into memory (~30-60s)..."
-        _write_status("models", _bootstrap_detail, 70)
-        _blog.info("Phase 3: loading models...")
-        _download_models()
-        _blog.info("Phase 3 complete")
-
-        # Phase 4: initialize the PII engine (Presidio + GLiNER recognizer)
-        # This avoids 60s+ timeout on first tool call.
-        _bootstrap_phase = "engine"
-        _bootstrap_detail = "Initializing PII engine..."
-        _write_status("engine", _bootstrap_detail, 90)
-        _blog.info("Phase 4: initializing PII engine...")
-        # Wait for module-level `engine = PIIEngine()` to be defined
+        # --- Initialize PII engine ---
+        _boot_progress.update(phase="engine", message="Initializing PII engine...", pct=85)
+        _blog.info("Initializing PII engine...")
         for _w in range(30):
             if "engine" in globals():
                 break
-            import time as _tw; _tw.sleep(1)
+            _time_boot.sleep(1)
         if "engine" in globals():
+            t0 = _time_boot.monotonic()
             engine._ensure_ready(_from_bootstrap=True)
-            _blog.info("Phase 4 complete — engine initialized")
+            timings["engine_sec"] = round(_time_boot.monotonic() - t0, 1)
+            _blog.info(f"PII engine initialized in {timings['engine_sec']}s")
         else:
-            _blog.warning("Phase 4: engine not yet defined, will init on first tool call")
+            _blog.warning("engine not yet defined, will init on first tool call")
 
-        _bootstrap_phase = "ready"
-        _bootstrap_detail = ""
-        _write_status("ready", "PII Shield is ready.", 100)
-        _blog.info("Bootstrap complete — ready for tool calls")
+        # Save benchmark for next boot
+        timings["total_sec"] = round(_time_boot.monotonic() - _boot_progress["start"], 1)
+        _save_boot_benchmark(timings)
+
+        _boot_progress.update(phase="ready", message="PII Shield is ready.", pct=100)
+        _blog.info(f"Boot complete in {timings['total_sec']}s — ready for tool calls")
 
     except Exception as e:
-        _bootstrap_error = str(e)
-        _bootstrap_phase = "error"
-        _bootstrap_detail = f"Bootstrap failed: {e}"
-        _write_status("error", _bootstrap_detail, 0)
+        _boot_error = str(e)
+        _boot_progress.update(phase="error", message=f"Failed: {e}", pct=0)
         _blog.error(f"Bootstrap failed: {e}")
     finally:
-        _bootstrap_done = True
+        _engine_ready.set()
 
-# --- Phase 2+3 (background): everything else ---
-_bg_thread = threading.Thread(target=_background_bootstrap, daemon=True)
-_bg_thread.start()
+
+@asynccontextmanager
+async def _pii_lifespan(app):
+    """FastMCP lifespan: starts model loading in anyio thread pool."""
+    import anyio
+    async with anyio.create_task_group() as tg:
+        async def _run_init():
+            await anyio.to_thread.run_sync(_sync_model_load)
+        tg.start_soon(_run_init)
+        yield {}
+
+
+# --- Startup: ensure MCP is available (sync, one-time install if needed) ---
+try:
+    __import__("mcp")
+except ImportError:
+    _blog.info("MCP not found — installing (one-time)...")
+    try:
+        _pip_install([("mcp", "mcp[cli]>=1.0.0")])
+        __import__("mcp")
+    except Exception as _e:
+        print(
+            f"FATAL: Cannot install MCP package: {_e}\n"
+            f"Fix: pip install 'mcp[cli]>=1.0.0'  then restart PII Shield.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 # ============================================================
 
 import json
@@ -476,34 +492,29 @@ class PIIEngine:
     GLINER_MODEL_NAME = os.environ.get("PII_GLINER_MODEL", _GLINER_MODEL)
 
     def _ensure_ready(self, _from_bootstrap=False):
-        """Initialize the PII engine. Called from bootstrap thread after packages/models are ready,
+        """Initialize the PII engine. Called from background thread after models are loaded,
         or lazily on first tool call.
 
-        Uses GLiNER (DeBERTa-v3 zero-shot NER) for high-quality entity recognition.
+        Uses GLiNER PII-tuned NER for high-quality entity recognition.
         SpaCy handles tokenization, GLiNER handles NER via Presidio's GLiNERRecognizer.
         Falls back to SpaCy-only if GLiNER is unavailable.
         """
         if self._initialized:
             return
 
-        # If called from a tool (not from bootstrap), wait for bootstrap to finish first.
+        # If called from a tool (not from background loader), wait for models to load first.
         if not _from_bootstrap:
-            global _bootstrap_done
-            if not _bootstrap_done:
-                log.info("Waiting for background bootstrap to complete...")
-                for _ in range(600):
-                    if _bootstrap_done:
-                        break
-                    time.sleep(1)
-                if not _bootstrap_done:
+            if not _engine_ready.is_set():
+                log.info("Waiting for background model load to complete...")
+                if not _engine_ready.wait(timeout=600):
                     raise RuntimeError(
-                        "Bootstrap timed out after 10 minutes. "
+                        "Model load timed out after 10 minutes. "
                         "Check internet connection and try restarting."
                     )
-            if _bootstrap_error:
-                log.warning(f"Bootstrap had errors: {_bootstrap_error}")
+            if _boot_error:
+                log.warning(f"Background load had errors: {_boot_error}")
 
-        log.info("Initializing PII Engine v5.4.0 (lazy init on first use)...")
+        log.info("Initializing PII Engine v1.0.0...")
 
         # --- SpaCy NLP engine (tokenization only) ---
         from presidio_analyzer.nlp_engine import NlpEngineProvider
@@ -534,11 +545,41 @@ class PIIEngine:
             gliner_recognizer = GLiNERRecognizer(
                 model_name=self.GLINER_MODEL_NAME,
                 entity_mapping={
+                    # Named entities
                     "person": "PERSON",
+                    "name": "PERSON",
                     "company": "ORGANIZATION",
                     "organization": "ORGANIZATION",
                     "location": "LOCATION",
+                    "address": "LOCATION",
                     "nationality": "NRP",
+                    # Contact info
+                    "phone number": "PHONE_NUMBER",
+                    "mobile phone number": "PHONE_NUMBER",
+                    "landline phone number": "PHONE_NUMBER",
+                    "fax number": "PHONE_NUMBER",
+                    "email": "EMAIL_ADDRESS",
+                    "email address": "EMAIL_ADDRESS",
+                    # Financial
+                    "credit card number": "CREDIT_CARD",
+                    "iban": "IBAN_CODE",
+                    "bank account number": "IBAN_CODE",
+                    # IDs
+                    "social security number": "US_SSN",
+                    "passport number": "US_PASSPORT",
+                    "driver's license number": "US_DRIVER_LICENSE",
+                    "tax identification number": "DE_TAX_ID",
+                    "national id number": "CY_ID_CARD",
+                    "identity card number": "CY_ID_CARD",
+                    # Digital
+                    "ip address": "IP_ADDRESS",
+                    "url": "URL",
+                    "username": "URL",
+                    # Medical
+                    "medical condition": "MEDICAL_LICENSE",
+                    "health insurance id number": "UK_NHS",
+                    # Date
+                    "date of birth": "DATE_TIME",
                 },
                 flat_ner=False,
                 multi_label=True,
@@ -1680,8 +1721,73 @@ class PIIEngine:
 # ============================================================
 # MCP Tools
 # ============================================================
-mcp = FastMCP("PII Shield", host="127.0.0.1", port=int(os.environ.get("PII_PORT", "8765")))
+mcp = FastMCP("PII Shield", host="127.0.0.1", port=int(os.environ.get("PII_PORT", "8765")), lifespan=_pii_lifespan)
 engine = PIIEngine()
+
+# --- Chunked processing state ---
+_chunk_sessions = {}  # session_id -> chunk state dict
+_CHUNK_SESSION_TTL = 1800  # 30 minutes
+
+
+def _split_paragraphs(text, target_size):
+    """Split text into chunks on paragraph boundaries (\\n\\n).
+    Each chunk is at most target_size chars (unless a single paragraph exceeds it)."""
+    paragraphs = text.split("\n\n")
+    chunks = []
+    current = []
+    current_len = 0
+    for para in paragraphs:
+        para_len = len(para) + (2 if current else 0)  # +2 for \n\n separator
+        if current_len + para_len > target_size and current:
+            chunks.append("\n\n".join(current))
+            current = [para]
+            current_len = len(para)
+        else:
+            current.append(para)
+            current_len += para_len
+    if current:
+        chunks.append("\n\n".join(current))
+    return chunks if chunks else [text]
+
+
+def _process_chunk(session_id):
+    """Process the current chunk: detect entities, assign placeholders with shared state."""
+    cs = _chunk_sessions[session_id]
+    chunk_idx = cs["current_chunk"]
+    chunk_text = cs["chunks"][chunk_idx]
+
+    # Detect entities in this chunk
+    engine._ensure_ready()
+    entities = engine.detect(chunk_text, cs["language"])
+    confirmed = [e for e in entities if e.get("verified")]
+
+    # Calculate offset for this chunk in the full text
+    offset = 0
+    for i in range(chunk_idx):
+        offset += len(cs["chunks"][i]) + 2  # +2 for \n\n separator
+
+    # Assign placeholders using shared state across all chunks
+    for e in sorted(confirmed, key=lambda x: x["start"]):
+        e["start"] += offset
+        e["end"] += offset
+        e["placeholder"] = engine._get_or_create_placeholder(
+            e["type"], e["text"],
+            cs["type_counters"], cs["seen_exact"], cs["seen_family"],
+            cs["mapping"], cs["prefix"]
+        )
+
+    cs["all_entities"].extend(confirmed)
+    cs["current_chunk"] = chunk_idx + 1
+    return confirmed
+
+
+def _cleanup_stale_chunk_sessions():
+    """Remove chunk sessions older than TTL."""
+    now = time.time()
+    stale = [sid for sid, cs in _chunk_sessions.items()
+             if now - cs.get("created_at", 0) > _CHUNK_SESSION_TTL]
+    for sid in stale:
+        del _chunk_sessions[sid]
 
 
 def _latest_session_id():
@@ -1703,26 +1809,28 @@ def _latest_session_id():
 
 
 def _check_ready():
-    """Check if bootstrap is done. Returns None if ready, or a JSON status string if still loading."""
-    if _bootstrap_done and not _bootstrap_error:
+    """Check if engine is ready. Returns None if ready, or a JSON status string if still loading."""
+    if _engine_ready.is_set() and not _boot_error:
         return None  # Ready
-    if _bootstrap_error and _bootstrap_phase == "error":
+    if _boot_error:
         return json.dumps({
             "status": "error",
-            "message": f"PII Shield failed to initialize: {_bootstrap_error}",
-            "hint": "Check internet connection, ensure Python 3.10+ with pip, and restart Cowork.",
+            "message": f"PII Shield failed to initialize: {_boot_error}",
+            "hint": "Check internet connection, ensure Python 3.10+ and restart.",
         }, indent=2)
-    # Still loading — include progress info
-    elapsed = round(time.time() - _bootstrap_start_time, 1) if _bootstrap_start_time else 0
-    progress_map = {"starting": 5, "packages": 40, "models": 70, "engine": 90}
-    progress_pct = progress_map.get(_bootstrap_phase, 0)
+    # Still loading — use benchmark for ETA
+    elapsed = round(time.monotonic() - _boot_progress["start"], 1) if _boot_progress.get("start") else 0
+    bench = _load_boot_benchmark()
+    eta_total = bench.get("total_sec")
+    eta_remaining = max(0, round(eta_total - elapsed, 1)) if eta_total else None
     return json.dumps({
         "status": "loading",
-        "phase": _bootstrap_phase,
-        "message": _bootstrap_detail or "PII Shield is starting up...",
-        "progress_pct": progress_pct,
+        "phase": _boot_progress.get("phase", "starting"),
+        "message": _boot_progress.get("message", "PII Shield is starting up..."),
+        "progress_pct": _boot_progress.get("pct", 0),
         "elapsed_seconds": elapsed,
-        "hint": "First-time setup installs dependencies (~5-10 min). Please wait and try again.",
+        "eta_remaining_sec": eta_remaining,
+        "retry_after_sec": 10 if elapsed > 180 else 25,
     }, indent=2)
 
 
@@ -1779,8 +1887,11 @@ def anonymize_file(file_path: str, language: str = "en", prefix: str = "", revie
         else:
             return json.dumps({"error": f"Review session not found: {review_session_id}. Run anonymize_file + start_review first."})
 
+    # --- Extract text based on format ---
+    text = None
+    docx_html = None
+
     if p.suffix.lower() == ".pdf":
-        # Extract text from PDF on the host machine
         try:
             import pdfplumber
         except ImportError:
@@ -1799,49 +1910,111 @@ def anonymize_file(file_path: str, language: str = "en", prefix: str = "", revie
         if len(text.strip()) < 50:
             return json.dumps({"error": "PDF has no extractable text layer. Scanned PDFs (OCR) are not yet supported.",
                                "file": str(p)})
-        r = engine.anonymize_text(text, language, prefix=prefix, entity_overrides=entity_overrides)
-        out_dir = _make_output_dir(p.parent, r["session_id"])
-        out = out_dir / f"{p.stem}_anonymized.txt"
-        out.write_text(r["anonymized_text"], encoding="utf-8")
-        r.pop("anonymized_text", None)
-        r["output_path"] = str(out)
-        r["output_dir"] = str(out_dir)
-        r["note"] = "Anonymized text written to output_path. Read the file to get the content."
-        return json.dumps(r, indent=2, ensure_ascii=False)
     elif p.suffix.lower() == ".docx":
-        # Extract text → anonymize_text → .txt (readable by Claude + review data for HITL)
-        # Also produce anonymized .docx (preserves formatting for REDLINE mode)
         _ensure_file_log(str(p.parent))
         _flog.info(f"======== anonymize_file DOCX | {p.name} | review_session_id={review_session_id!r} ========")
         try:
             from docx import Document as _DocxDoc
             _doc = _DocxDoc(str(p))
-            text = "\n".join(para.text for para in PIIEngine._iter_docx_paragraphs(_doc))
-            _flog.info(f"  Extracted text: {len(text)} chars from {sum(1 for _ in PIIEngine._iter_docx_paragraphs(_doc))} paragraphs")
+            # Body paragraphs as lines
+            parts = [para.text for para in _doc.paragraphs]
+            # Table rows: join cells with " | " so NER gets context for short values
+            # e.g. "James Whitfield | Managing Director | 15 March 2016"
+            for t in _doc.tables:
+                for row in t.rows:
+                    cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                    if cells:
+                        parts.append(" | ".join(cells))
+            # Headers/footers
+            for sec in _doc.sections:
+                for hf in [sec.header, sec.footer]:
+                    if hf:
+                        for para in hf.paragraphs:
+                            parts.append(para.text)
+            text = "\n".join(parts)
+            _flog.info(f"  Extracted text: {len(text)} chars from {len(parts)} parts")
         except Exception as e:
             return json.dumps({"error": f"Failed to read docx: {e}"})
-        # Generate HTML for review UI (preserves formatting)
         try:
             docx_html = PIIEngine._docx_to_html(_doc)
         except Exception:
             docx_html = None
-        r = engine.anonymize_text(text, language, prefix=prefix, entity_overrides=entity_overrides)
-        out_dir = _make_output_dir(p.parent, r["session_id"])
+    elif p.suffix.lower() in (".txt", ".md", ".csv", ".log", ".text"):
+        text = p.read_text(encoding="utf-8")
+    else:
+        return json.dumps({"error": f"Unsupported format: {p.suffix}. Supported: .pdf .docx .txt .md .csv"})
+
+    # --- Chunked processing for long documents (>15K chars) ---
+    if len(text) > 15000:
+        _cleanup_stale_chunk_sessions()
+        engine._ensure_ready()
+
+        # Auto-calibrate: measure NER speed on a small sample
+        TIMEOUT_BUDGET = 40  # seconds, with margin before 60s MCP timeout
+        cal_sample = text[:3000]
+        t_cal = time.time()
+        engine.detect(cal_sample, language)
+        cal_elapsed = time.time() - t_cal
+        chars_per_sec = 3000 / max(cal_elapsed, 0.1)
+        optimal_chunk_size = int(chars_per_sec * TIMEOUT_BUDGET)
+        optimal_chunk_size = max(4000, min(50000, optimal_chunk_size))
+
+        chunks = _split_paragraphs(text, optimal_chunk_size)
+        if len(chunks) > 1:
+            chunk_session_id = uuid.uuid4().hex[:12]
+            _chunk_sessions[chunk_session_id] = {
+                "text": text,
+                "chunks": chunks,
+                "current_chunk": 0,
+                "type_counters": defaultdict(int),
+                "seen_exact": {},
+                "seen_family": {},
+                "mapping": {},
+                "all_entities": [],
+                "prefix": prefix,
+                "language": language,
+                "source_path": str(p),
+                "source_suffix": p.suffix.lower(),
+                "chars_per_sec": chars_per_sec,
+                "optimal_chunk_size": optimal_chunk_size,
+                "entity_overrides": entity_overrides,
+                "docx_html": docx_html,
+                "created_at": time.time(),
+            }
+
+            # Process first chunk immediately
+            first_confirmed = _process_chunk(chunk_session_id)
+
+            cs = _chunk_sessions[chunk_session_id]
+            return json.dumps({
+                "status": "chunked",
+                "session_id": chunk_session_id,
+                "total_chunks": len(chunks),
+                "processed_chunks": 1,
+                "progress_pct": round(100 / len(chunks)),
+                "entities_so_far": len(first_confirmed),
+                "chars_per_sec": round(chars_per_sec),
+                "chunk_size": optimal_chunk_size,
+                "note": "Document is large. Call anonymize_next_chunk(session_id) to process remaining chunks, then get_full_anonymized_text(session_id).",
+            }, indent=2, ensure_ascii=False)
+
+    # --- Standard (non-chunked) processing ---
+    r = engine.anonymize_text(text, language, prefix=prefix, entity_overrides=entity_overrides)
+    out_dir = _make_output_dir(p.parent, r["session_id"])
+
+    if p.suffix.lower() == ".docx":
         _ensure_file_log(str(out_dir))
         _flog.info(f"  Output dir: {out_dir}")
-        # Store HTML in review data
         if docx_html:
             review_key = f"review:{r['session_id']}"
             if review_key in _in_memory_mappings:
                 _in_memory_mappings[review_key]["original_html"] = docx_html
                 _save_review_to_disk(r['session_id'], _in_memory_mappings[review_key])
-        # Write .txt for Claude to read
         out_txt = out_dir / f"{p.stem}_anonymized.txt"
         out_txt.write_text(r["anonymized_text"], encoding="utf-8")
         r.pop("anonymized_text", None)
         r["output_path"] = str(out_txt)
         r["output_dir"] = str(out_dir)
-        # Also produce anonymized .docx (same mapping as .txt — consistent placeholders)
         try:
             mapping = load_mapping(r["session_id"])
             _flog.info(f"  Producing anonymized .docx with {len(mapping)} placeholders")
@@ -1852,20 +2025,171 @@ def anonymize_file(file_path: str, language: str = "en", prefix: str = "", revie
             log.warning(f"anonymize_docx failed (txt output OK): {e}")
             _flog.warning(f"  anonymize_docx FAILED: {e}")
         r["note"] = "Anonymized text at output_path (.txt). For REDLINE, use docx_output_path (.docx with formatting)."
-        return json.dumps(r, indent=2, ensure_ascii=False)
-    elif p.suffix.lower() in (".txt", ".md", ".csv", ".log", ".text"):
-        text = p.read_text(encoding="utf-8")
-        r = engine.anonymize_text(text, language, prefix=prefix, entity_overrides=entity_overrides)
-        out_dir = _make_output_dir(p.parent, r["session_id"])
+    elif p.suffix.lower() == ".pdf":
+        out = out_dir / f"{p.stem}_anonymized.txt"
+        out.write_text(r["anonymized_text"], encoding="utf-8")
+        r.pop("anonymized_text", None)
+        r["output_path"] = str(out)
+        r["output_dir"] = str(out_dir)
+        r["note"] = "Anonymized text written to output_path. Read the file to get the content."
+    else:
         out = out_dir / f"{p.stem}_anonymized{p.suffix}"
         out.write_text(r["anonymized_text"], encoding="utf-8")
         r.pop("anonymized_text", None)
         r["output_path"] = str(out)
         r["output_dir"] = str(out_dir)
         r["note"] = "Anonymized text written to output_path. Read the file to get the content."
-        return json.dumps(r, indent=2, ensure_ascii=False)
+
+    return json.dumps(r, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+@_audit_tool
+def anonymize_next_chunk(session_id: str) -> str:
+    """Process next chunk of a chunked anonymization session.
+    Call repeatedly after anonymize_file returns status='chunked'.
+    Returns progress (processed_chunks, total_chunks, progress_pct)."""
+    if session_id not in _chunk_sessions:
+        return json.dumps({"error": f"Chunk session not found: {session_id}",
+                           "hint": "Session may have expired (30 min TTL) or was already finalized."})
+
+    cs = _chunk_sessions[session_id]
+    if cs["current_chunk"] >= len(cs["chunks"]):
+        return json.dumps({"status": "complete",
+                           "session_id": session_id,
+                           "total_entities": len(cs["all_entities"]),
+                           "note": "All chunks processed. Call get_full_anonymized_text(session_id) to finalize."})
+
+    # Process next chunk with timing
+    t0 = time.time()
+    confirmed = _process_chunk(session_id)
+    elapsed = time.time() - t0
+    chunk_len = len(cs["chunks"][cs["current_chunk"] - 1])
+
+    # Adaptive: if speed dropped >30%, re-split remaining chunks smaller
+    if elapsed > 0.1:
+        new_speed = chunk_len / elapsed
+        if new_speed < cs["chars_per_sec"] * 0.7:
+            cs["chars_per_sec"] = (cs["chars_per_sec"] + new_speed) / 2  # sliding average
+            new_size = max(4000, min(50000, int(cs["chars_per_sec"] * 40)))
+            # Re-split only remaining unprocessed text
+            if cs["current_chunk"] < len(cs["chunks"]):
+                remaining_chunks = cs["chunks"][cs["current_chunk"]:]
+                remaining_text = "\n\n".join(remaining_chunks)
+                new_chunks = _split_paragraphs(remaining_text, new_size)
+                cs["chunks"] = cs["chunks"][:cs["current_chunk"]] + new_chunks
+                log.info(f"Chunk session {session_id}: speed drop, re-split remaining into {len(new_chunks)} chunks (was {len(remaining_chunks)})")
+
+    is_complete = cs["current_chunk"] >= len(cs["chunks"])
+    return json.dumps({
+        "status": "complete" if is_complete else "in_progress",
+        "session_id": session_id,
+        "processed_chunks": cs["current_chunk"],
+        "total_chunks": len(cs["chunks"]),
+        "progress_pct": round(100 * cs["current_chunk"] / len(cs["chunks"])),
+        "entities_so_far": len(cs["all_entities"]),
+        "note": "All chunks processed. Call get_full_anonymized_text(session_id) to finalize." if is_complete
+                else "Call anonymize_next_chunk(session_id) again for the next chunk.",
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+@_audit_tool
+def get_full_anonymized_text(session_id: str) -> str:
+    """Assemble all processed chunks, finalize mapping, write output file.
+    Call after all chunks are processed (anonymize_next_chunk returned status='complete')."""
+    if session_id not in _chunk_sessions:
+        return json.dumps({"error": f"Chunk session not found: {session_id}",
+                           "hint": "Session may have expired or was already finalized."})
+
+    cs = _chunk_sessions[session_id]
+
+    # Process any remaining chunks
+    while cs["current_chunk"] < len(cs["chunks"]):
+        _process_chunk(session_id)
+
+    # Apply entity_overrides (from HITL review) on the full entity list
+    if cs.get("entity_overrides"):
+        cs["all_entities"] = engine._apply_overrides(
+            cs["all_entities"], cs["text"], cs["entity_overrides"]
+        )
+        # Re-assign placeholders for any new entities added by overrides
+        for e in cs["all_entities"]:
+            if "placeholder" not in e:
+                e["placeholder"] = engine._get_or_create_placeholder(
+                    e["type"], e["text"],
+                    cs["type_counters"], cs["seen_exact"], cs["seen_family"],
+                    cs["mapping"], cs["prefix"]
+                )
+
+    # Build anonymized text by replacing entities in reverse order
+    anonymized = cs["text"]
+    for e in sorted(cs["all_entities"], key=lambda x: x["start"], reverse=True):
+        anonymized = anonymized[:e["start"]] + e["placeholder"] + anonymized[e["end"]:]
+
+    # Save mapping with a final session_id
+    final_session_id = uuid.uuid4().hex[:12]
+    save_mapping(final_session_id, cs["mapping"], {"confirmed": len(cs["all_entities"])})
+
+    # Write output file
+    p = Path(cs["source_path"])
+    out_dir = p.parent / f"pii_shield_{final_session_id}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    by_type = defaultdict(int)
+    for e in cs["all_entities"]:
+        by_type[e["type"]] += 1
+
+    # Store review data for HITL
+    all_entities_raw = [{"type": e["type"], "text": e["text"], "start": e["start"],
+                         "end": e["end"], "score": e["score"], "verified": e.get("verified", False)}
+                        for e in cs["all_entities"]]
+    review_data = {
+        "original_text": cs["text"],
+        "entities": all_entities_raw,
+        "confirmed": list(range(len(all_entities_raw))),
+        "status": "pending",
+        "overrides": {"remove": [], "add": []},
+        "timestamp": time.time(),
+    }
+    if cs.get("docx_html"):
+        review_data["original_html"] = cs["docx_html"]
+    _in_memory_mappings[f"review:{final_session_id}"] = review_data
+    _save_review_to_disk(final_session_id, review_data)
+
+    result = {
+        "session_id": final_session_id,
+        "total_entities": len(cs["all_entities"]),
+        "unique_entities": len(cs["mapping"]),
+        "by_type": dict(by_type),
+        "output_dir": str(out_dir),
+    }
+
+    if cs["source_suffix"] == ".docx":
+        out_txt = out_dir / f"{p.stem}_anonymized.txt"
+        out_txt.write_text(anonymized, encoding="utf-8")
+        result["output_path"] = str(out_txt)
+        try:
+            docx_out = engine.anonymize_docx_with_mapping(p, cs["mapping"], out_dir)
+            result["docx_output_path"] = docx_out
+        except Exception as e:
+            log.warning(f"Chunked docx output failed: {e}")
+        result["note"] = "Anonymized text at output_path (.txt). For REDLINE, use docx_output_path (.docx with formatting)."
+    elif cs["source_suffix"] == ".pdf":
+        out_txt = out_dir / f"{p.stem}_anonymized.txt"
+        out_txt.write_text(anonymized, encoding="utf-8")
+        result["output_path"] = str(out_txt)
+        result["note"] = "Anonymized text written to output_path."
     else:
-        return json.dumps({"error": f"Unsupported format: {p.suffix}. Supported: .pdf .docx .txt .md .csv"})
+        out_file = out_dir / f"{p.stem}_anonymized{cs['source_suffix']}"
+        out_file.write_text(anonymized, encoding="utf-8")
+        result["output_path"] = str(out_file)
+        result["note"] = "Anonymized text written to output_path."
+
+    # Cleanup chunk session
+    del _chunk_sessions[session_id]
+
+    return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -1894,6 +2218,154 @@ def find_file(filename: str) -> str:
         return json.dumps({"matches": matches, "count": len(matches)})
     return json.dumps({"error": f"File '{filename}' not found in work_dir: {work_dir}",
                        "hint": "Ask the user for the full file path."})
+
+
+# --- Marker-based path resolution (VM → Host) ---
+
+_BFS_SKIP = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox",
+             ".mypy_cache", "$Recycle.Bin", "System Volume Information", "Windows"}
+_dir_cache = {}  # vm_dir -> host_dir
+_DIR_CACHE_FILE = Path.home() / ".pii_shield" / "dir_cache.json"
+
+
+def _load_dir_cache():
+    """Load cached VM→Host directory mappings from disk."""
+    global _dir_cache
+    if _DIR_CACHE_FILE.exists():
+        try:
+            _dir_cache = json.loads(_DIR_CACHE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            _dir_cache = {}
+
+
+def _save_dir_cache():
+    """Save VM→Host directory mappings to disk."""
+    try:
+        _DIR_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _DIR_CACHE_FILE.write_text(json.dumps(_dir_cache, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _bfs_find(root, target_name, max_depth=6):
+    """Depth-limited BFS for a file by exact name. Returns Path or None."""
+    from collections import deque
+    queue = deque([(Path(root), 0)])
+    while queue:
+        current, depth = queue.popleft()
+        try:
+            for entry in current.iterdir():
+                if entry.name == target_name and entry.is_file():
+                    return entry
+                if (entry.is_dir()
+                        and depth < max_depth
+                        and not entry.name.startswith('.')
+                        and entry.name not in _BFS_SKIP):
+                    queue.append((entry, depth + 1))
+        except (PermissionError, OSError):
+            continue
+    return None
+
+
+def _find_marker(marker, max_depth=6):
+    """Search for a unique marker file across home dir and drive roots."""
+    # Home directory first (most likely location)
+    result = _bfs_find(Path.home(), marker, max_depth)
+    if result:
+        return result
+
+    # Platform-specific additional roots
+    if sys.platform == "win32":
+        import string
+        home_drive = Path.home().drive
+        for letter in string.ascii_uppercase:
+            drive = Path(f"{letter}:\\")
+            if f"{letter}:" == home_drive:
+                continue  # already searched via home
+            if drive.exists():
+                result = _bfs_find(drive, marker, max_depth)
+                if result:
+                    return result
+    elif sys.platform == "darwin":
+        volumes = Path("/Volumes")
+        if volumes.exists():
+            for vol in volumes.iterdir():
+                if vol.is_dir() and vol.name != "Macintosh HD":
+                    result = _bfs_find(vol, marker, max_depth)
+                    if result:
+                        return result
+    else:  # Linux
+        for root in [Path("/home"), Path("/mnt"), Path("/media")]:
+            if root.exists():
+                result = _bfs_find(root, marker, max_depth)
+                if result:
+                    return result
+    return None
+
+
+# Load dir cache on module import
+_load_dir_cache()
+
+
+@mcp.tool()
+@_audit_tool
+def resolve_path(filename: str, marker: str, vm_dir: str = "") -> str:
+    """Zero-config file path resolution between VM and host.
+    Claude creates a unique marker file next to the target file in the VM.
+    This tool finds that marker on the host via BFS, derives the host path.
+
+    Args:
+        filename: Target file name (e.g. 'contract.docx')
+        marker: Exact marker filename Claude created (e.g. '.pii_marker_a1b2c3d4')
+        vm_dir: Optional VM directory path for caching the mapping
+    """
+    # Check cache first
+    cache_key = vm_dir or marker
+    if cache_key in _dir_cache:
+        cached_dir = Path(_dir_cache[cache_key])
+        candidate = cached_dir / filename
+        if candidate.exists():
+            # Clean up marker if it exists
+            marker_path = cached_dir / marker
+            if marker_path.exists():
+                try:
+                    marker_path.unlink()
+                except Exception:
+                    pass
+            return json.dumps({"host_path": str(candidate), "host_dir": str(cached_dir), "cached": True})
+
+    # BFS search for marker
+    found = _find_marker(marker)
+    if not found:
+        return json.dumps({
+            "error": f"Marker file '{marker}' not found on host.",
+            "hint": "Ensure the marker was created in the connected folder. Ask the user for the full host path as fallback.",
+        })
+
+    host_dir = found.parent
+
+    # Clean up marker
+    try:
+        found.unlink()
+    except Exception:
+        pass
+
+    # Cache the mapping
+    _dir_cache[cache_key] = str(host_dir)
+    if vm_dir:
+        _dir_cache[vm_dir] = str(host_dir)
+    _save_dir_cache()
+
+    # Find the target file
+    target = host_dir / filename
+    if target.exists():
+        return json.dumps({"host_path": str(target), "host_dir": str(host_dir)})
+
+    return json.dumps({
+        "error": f"Marker found at {host_dir} but '{filename}' not in that directory.",
+        "host_dir": str(host_dir),
+        "hint": "Check the filename spelling.",
+    })
 
 
 @mcp.tool()
@@ -2062,20 +2534,21 @@ def list_entities() -> str:
         except Exception:
             pass
 
-    # If still bootstrapping, show status without crashing
-    if not _bootstrap_done:
+    # If still loading, show status without crashing
+    if not _engine_ready.is_set():
         return json.dumps({
             "status": "loading",
-            "phase": _bootstrap_phase,
-            "message": _bootstrap_detail or "PII Shield is starting up...",
-            "hint": "First-time setup installs dependencies (~5-10 min). Please wait and try again.",
+            "phase": _boot_progress.get("phase", "starting"),
+            "message": _boot_progress.get("message", "PII Shield is starting up..."),
+            "progress_pct": _boot_progress.get("pct", 0),
+            "retry_after_sec": 10 if (_boot_progress.get("start") and (_time_boot.monotonic() - _boot_progress["start"]) > 180) else 25,
             "recent_sessions": recent,
         }, indent=2, ensure_ascii=False)
 
-    if _bootstrap_error and _bootstrap_phase == "error":
+    if _boot_error:
         return json.dumps({
             "status": "error",
-            "message": f"Bootstrap failed: {_bootstrap_error}",
+            "message": f"Model load failed: {_boot_error}",
             "recent_sessions": recent,
         }, indent=2, ensure_ascii=False)
 
@@ -2365,7 +2838,7 @@ def _ensure_ssl_cert(cert_dir: Path):
     log.info("Generating self-signed SSL certificate...")
     import subprocess
     subprocess.run([
-        "python", "-c",
+        sys.executable, "-c",
         f"""
 from cryptography import x509
 from cryptography.x509.oid import NameOID
@@ -2399,7 +2872,7 @@ if __name__ == "__main__":
     transport = "sse" if "--sse" in sys.argv else "stdio"
     port = int(os.environ.get("PII_PORT", "8765"))
 
-    log.info(f"Starting PII Shield MCP Server v6.0.0 ({transport})...")
+    log.info(f"Starting PII Shield MCP Server v1.0.0 ({transport})...")
 
     if transport == "sse":
             import ssl
