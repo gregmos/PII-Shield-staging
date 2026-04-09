@@ -247,6 +247,16 @@ PII-Shield/
 | Review page not loading | Check that port 8766 is free (8767 as fallback) |
 | Too many false positives | Raise `PII_MIN_SCORE` in settings. 212-term stoplist active by default. |
 
+## Acknowledgments
+
+PII Shield builds on a number of excellent open-source projects:
+
+- **[GLiNER](https://github.com/urchade/GLiNER)** + [`knowledgator/gliner-pii-base-v1.0`](https://huggingface.co/knowledgator/gliner-pii-base-v1.0) — zero-shot NER backbone.
+- **[Microsoft Presidio](https://github.com/microsoft/presidio)** — pattern recognizers and the EU regulatory pack.
+- **[spaCy](https://spacy.io/)** — tokenization and linguistic pre-processing.
+- **[`dealfluence/adeu`](https://github.com/dealfluence/adeu)** (MIT) — agentic redlining engine for `.docx`. PII Shield's v2.0.0 `.docx` pipeline ships an optional Python sidecar that uses `python-docx` + `lxml` for run-aware text replacement and native Word track-changes (`w:ins` / `w:del`); when `adeu` is reachable on PyPI it's installed alongside as a more robust reconciler. Both code paths fall back gracefully to PII Shield's pure-Node.js docx engine if Python is unavailable.
+- **[Claude Desktop](https://claude.ai/download)** + the [Model Context Protocol](https://modelcontextprotocol.io) — host runtime and tool surface.
+
 ## Author
 
 **Grigorii Moskalev** — [LinkedIn](https://www.linkedin.com/in/grigorii-moskalev/)

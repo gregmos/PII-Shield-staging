@@ -23,63 +23,52 @@ Anonymize → Work → Deanonymize → Deliver. Claude NEVER sees raw PII at any
 
 ## Startup
 
-PII Shield is an MCP extension that auto-installs its dependencies on first launch. On first use in a session, the server installs packages (~2-5 minutes on first launch) and loads NER models (~30-60 seconds on subsequent launches when packages are already installed).
+PII Shield tools are always visible in the tool list immediately after installation.
 
-**IMPORTANT**: PII Shield tools (`mcp__PII_Shield__*`) may NOT appear in your available tools immediately. On first launch, the server installs heavy dependencies (PyTorch, spaCy, GLiNER) which takes several minutes. This is NORMAL. Do NOT conclude that PII Shield is "not installed" or "not connected". Do NOT tell the user it will take "30 seconds" — first-time installation takes 2-5 minutes.
+On first use (or after updates), the backend downloads AI models. Any tool call during this time returns a loading status with progress details.
 
 ### Startup procedure
 
-**Step 1 — Do prep work FIRST** (gives the server time to start):
-- Identify the file(s) to process and determine the mode (MEMO, REDLINE, etc.)
-- Create the marker file for path resolution (see "How to determine host file path")
-- Plan your analysis approach
-- This prep work takes ~15-30 seconds — usually enough for the server to finish loading
+1. Identify the file(s) to process and determine the mode (MEMO, REDLINE, etc.)
+2. Create the marker file for path resolution (see `references/path-resolution.md`)
+3. Call `list_entities` to check status, or go straight to `anonymize_file`
+   - If `"status": "ready"` — proceed
+   - If `"status": "loading"` — display progress to user (see below), wait `retry_after_sec` seconds, retry. Repeat up to 15 times.
+   - If `"error"` field present — show error and suggestion to user
 
-**Step 2 — Check PII Shield readiness** (after prep work):
-1. Call `mcp__PII_Shield__list_entities`.
-   - If `"status": "ready"` — proceed to anonymization.
-   - If `"status": "loading"` — tell the user what's happening (show `message` field, e.g. "Installing dependencies..." or "Loading GLiNER model..."). Then **wait `retry_after_sec` seconds** (use `sleep` command), then call `list_entities` again. Repeat up to 10 times. Show progress updates to the user when the `message` changes. The server returns `retry_after_sec` dynamically: ~25 seconds during the first 3 minutes of boot, then ~10 seconds after.
-   - If `"status": "error"` — report the error to the user and ask them to restart PII Shield extension.
-2. If the tool is not found ("No such tool" error) — this means tools haven't appeared yet:
-   - Tell user: **"PII Shield is still starting up. Please send any message so I can connect."**
-   - **STOP your turn and wait** for user's next message. After they respond, retry from step 1.
+### How to display loading progress
+
+When PII Shield returns `"status": "loading"`, the response includes `phase`, `message`, and `progress_pct`. Show the user a **single concise status line** that updates on each retry. Format:
+
+**PII Shield loading [{progress_pct}%]: {message}**
+
+Phase meanings (for your context, don't show phase names to user):
+- `starting` (0%) — Python subprocess just launched
+- `packages` (5-20%) — Installing dependencies (first run only, takes 3-8 min)
+- `models` (30-55%) — Downloading/loading SpaCy and GLiNER models
+- `engine` (85%) — Initializing PII detection engine
+- `ready` (100%) — Ready
 
 **RULES**:
-- "loading" status → use `sleep` for `retry_after_sec` seconds between retries, show progress to user
-- "No such tool" → STOP, ask user to send message (sleep won't help — tool list only refreshes on new message)
-- Do NOT skip PII Shield. Do NOT offer to "work without anonymization".
+- Do NOT say "this is taking longer than usual" — first startup IS long (3-8 min), that's normal
+- Do NOT say "hang tight" or other filler — just show the progress line
+- Do NOT offer to "work without anonymization" or skip PII Shield
+- Do NOT repeat explanations on each retry — just update the progress line
+- While waiting, you CAN do useful prep work (create marker files, read skill docs, plan the analysis)
 
 ### Long document handling (chunked processing)
 
-For documents >15K characters, `anonymize_file` returns `"status": "chunked"` instead of processing everything at once. This prevents timeout on large documents.
-
-**Chunked processing flow:**
+For documents >15K characters, `anonymize_file` returns `"status": "chunked"`. **Chunked processing flow:**
 1. `anonymize_file(path)` returns `session_id`, `total_chunks`, `processed_chunks: 1`
-2. Loop: call `anonymize_next_chunk(session_id)` until `status` is `"complete"`
-   - Show progress to user after each chunk: "Anonymizing... [chunk X/Y]"
+2. Loop: call `anonymize_next_chunk(session_id)` until `status` is `"complete"` — show "Anonymizing... [chunk X/Y]"
 3. Call `get_full_anonymized_text(session_id)` to finalize — returns `output_path`, `session_id`, `output_dir`
-4. Continue with the normal pipeline (HITL review, analysis, etc.) using the returned values
+4. Continue with the normal pipeline using the returned values
 
-For short documents (<15K chars), `anonymize_file` processes everything in one call — no chunking needed.
+For short documents (<15K chars), `anonymize_file` processes everything in one call.
 
-### File path resolution (zero-config, automatic)
+### File path resolution
 
-MCP tools run on the HOST, not in the VM. VM paths don't exist on the host. To resolve the correct host path:
-
-1. Determine the target filename and its directory inside the VM
-2. Create a unique marker file NEXT TO the target file:
-   ```
-   MARKER=".pii_marker_$(openssl rand -hex 4)"
-   touch /path/to/folder/$MARKER
-   ```
-3. Call `resolve_path(filename="contract.docx", marker=".pii_marker_a1b2c3d4")`
-   The server finds the marker on host via fast BFS search, returns `host_path`.
-   The marker is auto-deleted by the server.
-4. Call `anonymize_file(host_path)`
-
-This works with ANY connected folder location — no configuration needed. The mapping is cached, so subsequent files in the same directory resolve instantly.
-
-**Fallback**: If `resolve_path` fails, use `find_file(filename)` (requires configured work_dir) or ask the user for the full host path.
+MCP tools run on the HOST, not in the VM. Create a marker file next to the target, call `resolve_path(filename, marker)` to get the host path. For full details and fallback methods, read `references/path-resolution.md`.
 
 All PII Shield tools are registered as MCP tools with prefix `mcp__PII_Shield__`.
 
@@ -106,9 +95,9 @@ All PII Shield tools are registered as MCP tools with prefix `mcp__PII_Shield__`
 
 **`prefix` parameter**: Use for multi-file workflows to avoid placeholder collisions. Example: `prefix="D1"` → `<D1_ORG_1>`, `prefix="D2"` → `<D2_ORG_1>`. Each file gets its own prefix and session_id.
 
-**`review_session_id` parameter**: Pass the `session_id` from a previous `anonymize_file` call after HITL review. The server fetches the user's overrides internally and re-anonymizes. PII never passes through Claude — no entity text, no override JSON.
+**`review_session_id` parameter**: Pass the `session_id` from a previous `anonymize_file` call after HITL review. The server fetches the user's overrides internally and re-anonymizes. PII never passes through Claude.
 
-**Preferred approach**: Always use `anonymize_file(file_path)` — only the file path (a short string) passes through the API. The MCP server on the host reads and anonymizes the file locally. Use `resolve_path(filename, marker)` to resolve the host path (see "File path resolution" section above), or `find_file(filename)` as fallback.
+**Preferred approach**: Always use `anonymize_file(file_path)` — only the file path passes through the API. Use `resolve_path(filename, marker)` to resolve the host path, or `find_file(filename)` as fallback.
 
 ## Skip mode
 
@@ -116,43 +105,46 @@ If user says "skip pii shield", "don't anonymize", "work directly" — skip anon
 
 ---
 
-## Human-in-the-Loop Review (after anonymization)
+## Reference files — read BEFORE starting the mode
 
-After every `anonymize_file` call, offer the user a review step. The review page runs **locally on the user's machine** — PII never leaves their computer.
+Load the appropriate reference file(s) based on the detected mode. Reference files are in the `references/` directory next to this SKILL.md.
 
-### Review pipeline
+| Mode / Phase | Read BEFORE starting work |
+|---|---|
+| All modes | `references/hitl-review.md` (at the HITL Review step) |
+| Path issues | `references/path-resolution.md` (for host path resolution details) |
+| MEMO | `references/memo-writing-style.md` + `references/docx-formatting.md` |
+| REDLINE | `references/redline-tracked-changes.md` |
+| SUMMARY | `references/docx-formatting.md` |
+| COMPARISON | `references/comparison-mode.md` + `references/docx-formatting.md` |
+| BULK | `references/bulk-mode.md` + reference file(s) for the wrapped mode |
+| ANONYMIZE-ONLY | No reference files needed |
 
-1. After `anonymize_file` returns a `session_id`, call `start_review(session_id)` — this starts the local review server and returns the review URL (does NOT open the browser)
-2. Ask the user using AskUserQuestion, **including the review URL in the question text**:
-   - **"I want to review — open the link"** — user will open the URL in their browser
-   - **"Looks good — proceed with analysis"** — user trusts the anonymization, skip review
-   - **"Skip review — just proceed"** — user wants to skip entirely
+**You MUST read the listed reference file(s) BEFORE starting analysis, not after.**
 
-   Example question: "I anonymized N entities. You can review them here: http://localhost:8766/review/abc123 — click entities to remove false positives, select text to add missed ones."
-3. If user chose **"I'm reviewing now"**:
-   - Wait 15 seconds, then call `get_review_status(session_id)`
-   - If `"status": "pending"` — ask again: "Still reviewing? [Done / Need more time]"
-   - If `"status": "approved"` — check `has_changes`:
-     - If `true`: call `anonymize_file(original_file_path, review_session_id=session_id)` — the server fetches the user's overrides internally and re-anonymizes. **No PII passes through Claude** — neither entity text nor override details. **CRITICAL**: This returns a NEW `session_id`, new `output_path`, and (for .docx) new `docx_output_path`. You MUST use ALL new values for all subsequent steps — discard the old session_id, output_path, and docx_output_path. Re-read the anonymized text from the NEW output_path. For REDLINE mode, apply tracked changes to the NEW docx_output_path (not the old one).
-     - If `false`: proceed with the original anonymized text
-4. If user chose **"Looks good"** or **"Skip review"** — proceed immediately with the original anonymized text
+---
 
-### What the review page lets users do
+## Human-in-the-Loop Review (mandatory)
 
-- **See** the full document with color-coded entity highlights (persons in blue, organizations in purple, locations in green, contacts in orange)
-- **Remove** false positives by clicking on highlighted entities
-- **Add** missed entities by selecting text and choosing the entity type
-- **Approve** when satisfied — sends overrides back to PII Shield server (localhost only)
+HITL review is **mandatory** after every `anonymize_file` call, unless the user has set `skip_review: true` in extension settings (Settings → Extensions → PII Shield). Check the `PII_SKIP_REVIEW` environment variable — if it equals `"true"`, skip the review step entirely.
 
-### Important rules
+**When review is active** (default), call `start_review(session_id)` — it returns a self-contained HTML review file. Then follow this two-step protocol exactly:
 
-- **NEVER** read, log, or forward the output of `get_review_status` override details — it may contain PII. You only need `status` and `has_changes` from it.
-- **NEVER** pass `entity_overrides` as a string to any tool — use `review_session_id` so the server handles overrides internally.
-- **NEVER** try to find missed PII yourself — this would require reading the original text, which defeats the purpose of anonymization.
-- The review page runs on `localhost` — PII never leaves the user's machine.
-- The `start_review` tool does NOT open the browser — it only starts the server and returns the URL. Present the URL to the user in AskUserQuestion so they can open it themselves.
-- If `start_review` fails (port busy), tell the user and proceed without review.
-- Keep the original **file path** — you'll need it for `anonymize_file(file_path, review_session_id=...)`. Do NOT keep raw text or override details.
+1. **Read the file first.** The response contains a `next_action` object with a `file_path`. **You MUST call your built-in `Read` tool on that path before saying anything to the user.** Reading the file is what registers it with Cowork's Artifacts pane so the user can click to preview — if you skip this step, no preview affordance appears and the user has nothing to click.
+2. **Then send the `user_message` field verbatim** as your reply. Do not paraphrase, shorten, or add to it — it tells the user exactly what to do (open the artifact, review highlighted PII, click Approve, then say "done").
+
+After sending the user_message, ask via AskUserQuestion: **"Let me know once you've clicked Approve in the review page."** with options: **"Done — apply my changes"** / **"Skip — keep original detections"**.
+
+When the user picks **Done**:
+
+1. **Preferred path (works in Cowork's sandboxed file viewer):** the review page will display an opaque code starting with `PII_DECISIONS_v1:` after the user clicks Approve. Ask the user to **paste that code** into the chat, then call `apply_review_decisions(session_id, decisions_code=<the pasted code>)`. The code is encrypted with a per-session key the server holds — you (the LLM) only ever see ciphertext, never the user's PII decisions. Do NOT try to read, parse, or interpret the code yourself; pass it through verbatim.
+2. **Fallback path (regular browser, file actually downloaded):** if the user says they didn't see a code but the JSON file downloaded normally, call `apply_review_decisions(session_id)` with no `decisions_code`. The server will locate `review_<session_id>_decisions.json` in Downloads / the workspace automatically — **never ask the user for a path**.
+
+If the call returns `error: "Decisions file ... not found"` or `error: "Failed to decode decisions_code"`, prompt the user once more (ask them to either click Approve again, or copy the code more carefully), then retry. Do not loop more than twice.
+
+If `apply_review_decisions` returns `has_changes: true`, you MUST re-run `anonymize_file(path, review_session_id=session_id)` and discard the old `session_id`, `output_path`, and `docx_output_path` — use ALL the new values returned by the second call. If `has_changes: false`, keep the original session.
+
+**Read `references/hitl-review.md` for the full pipeline and edge cases.**
 
 ---
 
@@ -173,110 +165,52 @@ Detect the mode from the user's request. If ambiguous, ask.
 
 ## MODE: MEMO (Legal Analysis)
 
-Full legal memorandum with risk assessment. The default mode.
+Full legal memorandum with risk assessment. The default mode. Read `references/memo-writing-style.md` + `references/docx-formatting.md` before starting.
 
 ### Pipeline
 
-```
-1. Warm-up: list_entities() → confirm tools loaded
-2. Resolve host path: create marker → resolve_path(filename, marker) → host_path
-   (See "File path resolution" section. Fallback: find_file or ask user)
-3. anonymize_file(file_path) → output_path, session_id, output_dir
-   All output files are in output_dir (pii_shield_<session_id>/ subfolder).
-   Read the anonymized text from output_path (the file on disk)
-   (PII never leaves the host — only the path goes through the API)
-4. HITL Review: start_review(session_id) → offer review to user (see "Human-in-the-Loop Review" section)
-   If user made changes: anonymize_file(file_path, review_session_id=session_id) → new output_path, NEW session_id
-   Re-read anonymized text from the new output_path. Use the NEW session_id for all subsequent steps.
-5. Analyze anonymized text → structured memo with <ORG_1> etc.
-6. Create formatted .docx via docx-js (read the `docx` SKILL.md first!)
-7. deanonymize_docx(formatted.docx, session_id) → final.docx
-8. Copy to mnt/outputs/, present link to user
-   **DO NOT read, verify, or pandoc the deanonymized file — it contains real PII. Just give the path.**
-```
-
-### Writing Style — see section below
+1. Warm-up: `list_entities()` → confirm tools loaded
+2. Resolve host path: create marker → `resolve_path(filename, marker)` → host_path
+3. `anonymize_file(file_path)` → output_path, session_id, output_dir. Read anonymized text from output_path.
+4. HITL Review (see `references/hitl-review.md`). If changes: re-anonymize, use ALL new values.
+5. Analyze anonymized text → structured memo with `<ORG_1>` etc.
+6. Create formatted .docx via docx-js (see `references/docx-formatting.md`)
+7. `deanonymize_docx(formatted.docx, session_id)` → final.docx
+8. Copy to mnt/outputs/, present link. **DO NOT read/verify deanonymized file.**
 
 ---
 
 ## MODE: REDLINE (Tracked Changes)
 
-Apply tracked changes to make the contract more favorable for the specified party. Output is a .docx with Word-native revision marks (accept/reject in Word).
+Apply tracked changes to make the contract more favorable. Output: .docx with Word-native revision marks. Read `references/redline-tracked-changes.md` before starting.
 
 ### Pipeline
 
-```
-1. Warm-up: list_entities() → confirm tools loaded
-2. Resolve host path: create marker → resolve_path(filename, marker) → host_path
-   (See "File path resolution" section. Fallback: find_file or ask user)
-3. anonymize_file(file_path) → output_path (.txt), docx_output_path (.docx), output_dir, session_id
-   All output files are in output_dir (a pii_shield_<session_id>/ subfolder next to the source file).
-   Read the anonymized text from output_path for analysis.
-   Keep docx_output_path — this is the anonymized .docx with original formatting (same placeholders as .txt).
-4. HITL Review: start_review(session_id) → offer review to user
-   If user made changes: anonymize_file(file_path, review_session_id=session_id) → new output_path, new docx_output_path, NEW output_dir, NEW session_id
-   ⚠️ CRITICAL: DISCARD ALL old values. Re-read from NEW output_path. Use NEW session_id for deanonymize.
-   Use NEW docx_output_path for Step 6 (tracked changes). The old docx does NOT contain the user's corrections.
+1. Warm-up: `list_entities()` → confirm tools loaded
+2. Resolve host path: create marker → `resolve_path(filename, marker)` → host_path
+3. `anonymize_file(file_path)` → output_path (.txt), docx_output_path (.docx), output_dir, session_id. Read anonymized text from output_path. Keep docx_output_path for Step 6.
+4. HITL Review (see `references/hitl-review.md`). If changes: re-anonymize, use ALL new values including NEW docx_output_path.
 5. Analyze: identify clauses to change, draft new wording (all in placeholders)
-6. Apply tracked changes to the anonymized .docx (docx_output_path) via OOXML (python-docx + lxml)
-   Save the result into the same output_dir.
-7. deanonymize_docx(tracked_changes.docx, session_id) → final.docx (saved in output_dir)
-8. Copy to mnt/outputs/, present link to user
-   **DO NOT read, verify, or pandoc the deanonymized file — it contains real PII. Just give the path.**
-```
-
-### Step 6: OOXML Tracked Changes
-
-Tracked changes in .docx are XML elements `w:ins` (insertion) and `w:del` (deletion) inside paragraph runs. They require `w:rPr` (run properties) to preserve formatting and `w:author`/`w:date` attributes.
-
-**Critical implementation details:**
-- Work on the **anonymized .docx** (`docx_output_path` from Step 3) — it preserves original formatting with PII replaced by placeholders
-- Use `python-docx` to open the document + `lxml` to manipulate XML directly
-- For each change: find the target paragraph → locate the text run → split at the change point → wrap deleted text in `w:del > w:r > w:delText` → insert new text in `w:ins > w:r > w:t`
-- Preserve all `w:rPr` (font, size, bold, etc.) from the original run
-- Set `w:author="Claude"` and `w:date` to current ISO datetime
-- Save with `doc.save()`
-
-**Example XML structure for a tracked change:**
-```xml
-<w:p>
-  <w:r><w:rPr>...</w:rPr><w:t>unchanged text before </w:t></w:r>
-  <w:del w:author="Claude" w:date="2026-03-27T12:00:00Z">
-    <w:r><w:rPr>...</w:rPr><w:delText>old text</w:delText></w:r>
-  </w:del>
-  <w:ins w:author="Claude" w:date="2026-03-27T12:00:00Z">
-    <w:r><w:rPr>...</w:rPr><w:t>new text</w:t></w:r>
-  </w:ins>
-  <w:r><w:rPr>...</w:rPr><w:t> unchanged text after</w:t></w:r>
-</w:p>
-```
-
-**Important**: All changes use placeholder text (`<ORG_1>`, `<PERSON_2>`). After `deanonymize_docx`, the tracked changes will contain real names/entities.
+6. Apply tracked changes to anonymized .docx via OOXML (see `references/redline-tracked-changes.md`). Save in output_dir.
+7. `deanonymize_docx(tracked_changes.docx, session_id)` → final.docx
+8. Copy to mnt/outputs/, present link. **DO NOT read/verify deanonymized file.**
 
 ---
 
 ## MODE: SUMMARY (Brief Overview)
 
-Concise document summary — key parties, subject, term, financial terms, notable risks.
+Concise document summary. Read `references/docx-formatting.md` before creating .docx.
 
 ### Pipeline
 
-```
-1. Warm-up: list_entities() → confirm tools loaded
-2. Resolve host path: create marker → resolve_path(filename, marker) → host_path
-   (See "File path resolution" section. Fallback: find_file or ask user)
-3. anonymize_file(file_path) → output_path, session_id, output_dir
-   All output files are in output_dir (pii_shield_<session_id>/ subfolder).
-   Read the anonymized text from output_path (the file on disk)
-4. HITL Review: start_review(session_id) → offer review to user
-   If user made changes: anonymize_file(file_path, review_session_id=session_id) → new output_path, NEW session_id
-   Re-read from new output_path. Use NEW session_id for all subsequent steps.
+1. Warm-up: `list_entities()` → confirm tools loaded
+2. Resolve host path: create marker → `resolve_path(filename, marker)` → host_path
+3. `anonymize_file(file_path)` → output_path, session_id, output_dir. Read anonymized text from output_path.
+4. HITL Review (see `references/hitl-review.md`). If changes: re-anonymize, use ALL new values.
 5. Write summary (1–2 pages max) with placeholders
-6. Create formatted .docx via docx-js (lighter formatting than MEMO)
-7. deanonymize_docx(summary.docx, session_id) → final.docx
-8. Copy to mnt/outputs/, present link to user
-   **DO NOT read, verify, or pandoc the deanonymized file — it contains real PII. Just give the path.**
-```
+6. Create formatted .docx via docx-js
+7. `deanonymize_docx(summary.docx, session_id)` → final.docx
+8. Copy to mnt/outputs/, present link. **DO NOT read/verify deanonymized file.**
 
 ### Summary structure
 
@@ -289,216 +223,26 @@ Concise document summary — key parties, subject, term, financial terms, notabl
 
 ## MODE: COMPARISON (Diff Two Documents)
 
-Compare two versions of a document or two related documents. Show what changed.
-
-### Pipeline
-
-```
-1. Warm-up: list_entities() → confirm tools loaded
-2. Resolve host paths: create marker → resolve_path for each file → host_path_1, host_path_2
-   (See "File path resolution" section. Fallback: find_file or ask user)
-3. anonymize_file(file_path_1, prefix="D1") → output_path_1, session_id_1, output_dir_1
-   Read the anonymized text from output_path_1
-4. anonymize_file(file_path_2, prefix="D2") → output_path_2, session_id_2, output_dir_2
-   Read the anonymized text from output_path_2
-5. HITL Review: start_review(session_id_1) → offer review for primary document (D1)
-   If user made changes: anonymize_file(file_path_1, review_session_id=session_id_1) → new output_path_1, NEW session_id_1
-   Re-read from new output_path_1. Use NEW session_id_1 for deanonymization.
-6. Compare: structural diff (added/removed/changed clauses)
-7. Create comparison report .docx via docx-js
-   — Use session_id_1 for deanonymization (primary document)
-   — D2 placeholders remain as-is OR use deanonymize_text for D2 references
-8. deanonymize_docx(comparison.docx, session_id_1) → final.docx
-9. Copy to mnt/outputs/, present link to user
-   **DO NOT read, verify, or pandoc the deanonymized file — it contains real PII. Just give the path.**
-```
-
-**Note**: With prefix support, `<D1_ORG_1>` and `<D2_ORG_1>` won't collide even if both files mention the same entity. The comparison report can reference both sets of placeholders.
+Read `references/comparison-mode.md` + `references/docx-formatting.md` before starting. Full pipeline is in the reference file.
 
 ---
 
 ## MODE: BULK (Multiple Files)
 
-Process up to 5 files. Wraps any of the modes above.
-
-### Pipeline
-
-```
-1. Warm-up: list_entities() → confirm tools loaded
-2. For each file i (1..N):
-   anonymize_file(file_path_i, prefix=f"D{i}") → output_path_i, session_id_i
-   Read the anonymized text from each output_path_i
-3. HITL Review: start_review(session_id_1) → offer review for primary document (D1)
-   If user made changes: anonymize_file(file_path_1, review_session_id=session_id_1) → new output_path_1, NEW session_id_1
-   Re-read from new output_path_1. Use NEW session_id_1 for deanonymization.
-4. Apply the requested mode (MEMO/SUMMARY/COMPARISON) across all anonymized texts
-5. Create output .docx with all placeholder sets
-6. Deanonymize: use session_id_1 (primary document)
-   — Other documents' placeholders: deanonymize_text for text snippets,
-     or leave as placeholders with a legend table mapping D1/D2/D3 to file names
-7. Copy to mnt/outputs/, present link to user
-```
-
-**Important**: Each file gets its own `prefix` and `session_id`. The prefix prevents placeholder collisions (`<D1_ORG_1>` vs `<D2_ORG_1>`).
+Read `references/bulk-mode.md` + reference file(s) for the wrapped mode before starting. Full pipeline is in the reference file.
 
 ---
 
 ## MODE: ANONYMIZE-ONLY
 
-Just anonymize and return the anonymized file. No analysis.
+Just anonymize and return the anonymized file. No analysis. No reference files needed.
 
 ### Pipeline
 
-```
-1. Warm-up: list_entities() → confirm tools loaded
-2. Resolve host path: create marker → resolve_path(filename, marker) → host_path
-   (See "File path resolution" section. Fallback: find_file or ask user)
-3. anonymize_file(file_path) → output_path, session_id, output_dir
-   All output files are in output_dir (pii_shield_<session_id>/ subfolder).
-   Read the anonymized text from output_path (the file on disk)
-4. HITL Review: start_review(session_id) → offer review to user
-   If user made changes: anonymize_file(file_path, review_session_id=session_id) → new output_path, NEW session_id
-   Re-read from new output_path. Use NEW session_id if user needs deanonymization later.
+1. Warm-up: `list_entities()` → confirm tools loaded
+2. Resolve host path: create marker → `resolve_path(filename, marker)` → host_path
+3. `anonymize_file(file_path)` → output_path, session_id, output_dir. Read anonymized text from output_path.
+4. HITL Review (see `references/hitl-review.md`). If changes: re-anonymize, use ALL new values.
 5. Copy anonymized file to mnt/outputs/
 6. Present link to user
 7. Tell user the session_id in case they need deanonymization later
-```
-
----
-
-## File Input Handling
-
-**CRITICAL PRIVACY RULE**: Always use `anonymize_file(file_path)` — NEVER extract text in the sandbox and pass it to `anonymize_text`. When you extract text in the sandbox, the raw text enters Claude's context window and passes through the API — defeating the purpose of anonymization. With `anonymize_file`, only the file PATH (a short string) goes through the API. The MCP server on the host reads and anonymizes the file locally. PII never leaves the user's machine.
-
-### How to determine the host file path
-
-PII Shield runs on the **HOST machine**, not in the Cowork sandbox. `anonymize_file` needs the Windows/Mac/Linux host path.
-
-**Step 1 — Marker-based resolution** (primary method, zero-config):
-Create a unique marker file next to the target file, then call `resolve_path`:
-```bash
-MARKER=".pii_marker_$(openssl rand -hex 4)"
-touch /path/to/folder/$MARKER
-```
-Then: `resolve_path(filename="contract.docx", marker=$MARKER)` returns the host path. Marker is auto-deleted. The mapping is cached for the session.
-
-**Step 2 — VirtioFS mount info** (alternative, no user interaction):
-Check the VirtioFS mount to derive the host path:
-```bash
-ls /mnt/.virtiofs-root/shared/
-```
-This shows the host user's home folder structure. Derive the host path from the mount structure.
-
-**Step 3 — Use `find_file(filename)`** (fallback): Searches the configured working directory (Settings > Extensions > PII Shield). If found, use the returned path.
-
-**Step 4 — Ask the user** (last resort): If all above fail, ask the user for the full host path.
-
-**Step 4 — Use `output_dir` for all subsequent files**:
-- `anonymize_file` returns `output_dir` like `C:\Users\User\Downloads\testtest\pii_shield_a1b2c3d4e5f6\`
-- This is the dedicated subfolder for this session — save all generated files here (tracked changes docx, etc.)
-- The parent of `output_dir` is the host working directory — use it to find other source files in the same folder
-
-**Supported formats**: `.pdf`, `.docx`, `.txt`, `.md`, `.csv`
-
-**DO NOT** extract text in the sandbox using pdfplumber/python-docx and pass it to `anonymize_text`. This leaks PII through the API. The ONLY acceptable use of `anonymize_text` is when the user explicitly pastes text into the chat (in which case PII is already in the conversation).
-
----
-
-## Path Mapping for deanonymize_docx
-
-The `deanonymize_docx` tool runs on the HOST machine (Windows), not in the Linux VM. File paths must be Windows paths.
-
-**Rule**: All anonymized files are already in `output_dir` (a Windows path like `C:\Users\User\Downloads\testtest\pii_shield_abc123\`). Use paths from the `anonymize_file` response directly — they are already valid Windows paths.
-
-**For files you create** (e.g., tracked changes docx saved in the sandbox):
-- Your sandbox file is at `/sessions/.../mnt/uploads/output_dir_name/tracked_changes.docx`
-- Windows path: take `output_dir` from `anonymize_file` response and append the filename: `output_dir + "\tracked_changes.docx"`
-
-If `deanonymize_docx` returns "Not found" — double-check the path. The file must exist at the Windows path on the host machine.
-
----
-
-## Writing Style (for MEMO mode)
-
-### Tone
-
-Formal, precise, dispassionate. No hedging ("it seems", "it could potentially"). Direct statements: "Risk is high", "Deadline not established", "Liability is uncapped".
-
-### Sentence structure
-
-Short declarative sentences. Each sentence carries one idea.
-
-### Opening
-
-Bold title: `[Subject]: [Analytical framing]` — e.g., `<ORG_3>: Legal Risks of Purchase Order No. 3`. Below: 1-2 context paragraphs (who, what, why). No abstract.
-
-### Section numbering
-
-Strict hierarchical: `1.`, `2.`, `2.1.`, `2.2.` Section headings are bold and descriptive.
-
-### Each risk/issue subsection:
-
-1. Description of the issue
-2. Direct quote from source (indented, italic, original language)
-3. Analysis of implications
-4. Risk assessment: "Risk: high/medium/low." + justification + recommendations
-
-### Quotes
-
-Original language, indented, italic, 11pt. Introduced with reference: "Section 7 of the Purchase Order states:" or "Section 13.2 provides:"
-
-### Conclusion
-
-Not generic. List of specific action items tied to specific risks: `[Risk label]: [specific action]`.
-
-### Language
-
-Adapts to user's language. Quotes stay in source language. English terms (SaaS, AI, GDPR, UGC) used as-is.
-
----
-
-## Formatting Reference — Legal Memo (.docx)
-
-**Read the `docx` SKILL.md first** for setup, validation, and critical rules for docx-js.
-
-**CRITICAL: Every TextRun MUST have explicit `font: "Arial"` and `size`.** Do NOT rely on defaults.
-
-### Setup
-
-```javascript
-const { Document, Packer, Paragraph, TextRun, AlignmentType,
-        Table, TableRow, TableCell, WidthType, ShadingType } = require('docx');
-const fs = require('fs');
-
-const BODY_RUN = { font: "Arial", size: 24 };             // 12pt
-const BOLD_RUN = { font: "Arial", size: 24, bold: true };  // 12pt bold
-const QUOTE_RUN = { font: "Arial", size: 22, italics: true }; // 11pt italic
-const STD_SPACING = { before: 0, after: 120, line: 240, lineRule: "auto" };
-```
-
-### Paragraph types
-
-| Type | Bold? | Italic? | Size | First-line indent | Left indent | Spacing |
-|------|-------|---------|------|-------------------|-------------|---------|
-| Title | YES | no | 24 | 0 | 0 | STD_SPACING |
-| Body | no | no | 24 | 630 | 0 | STD_SPACING |
-| Section heading | YES | no | 24 | 0 | 0 | STD_SPACING |
-| Blockquote | no | YES | 22 | 0 | 900 | STD_SPACING |
-| Risk line | no | no | 24 | 630 | 0 | STD_SPACING |
-
-**Blockquote**: `indent: { left: 900, firstLine: 0 }` — shifts ENTIRE paragraph right, not just first line.
-
-### Document structure (MEMO)
-
-1. Title (bold)
-2. Context paragraphs (1–2)
-3. Definitions section
-4. Analysis sections (heading → body → blockquote → risk assessment)
-5. Conclusion (action items)
-6. Risk summary table (optional)
-
-### Validation
-
-```bash
-python scripts/office/validate.py output.docx
-```

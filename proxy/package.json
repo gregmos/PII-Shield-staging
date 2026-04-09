@@ -1,0 +1,16 @@
+{
+  "name": "pii-shield-proxy",
+  "version": "2.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "which": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

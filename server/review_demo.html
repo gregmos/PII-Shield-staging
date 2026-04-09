@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PII Shield Review — Demo</title>
+<style>
+  :root {
+    --bg: #fafafa; --surface: #ffffff; --text: #1a1a2e; --text-secondary: #6b7280;
+    --border: #e5e7eb; --accent: #10b981; --accent-hover: #059669;
+    --person: #3b82f6; --person-bg: #dbeafe;
+    --org: #8b5cf6; --org-bg: #ede9fe;
+    --location: #10b981; --location-bg: #d1fae5;
+    --comm: #f59e0b; --comm-bg: #fef3c7;
+    --other: #6b7280; --other-bg: #f3f4f6;
+    --danger: #ef4444; --danger-bg: #fee2e2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f172a; --surface: #1e293b; --text: #e2e8f0; --text-secondary: #94a3b8;
+      --border: #334155;
+      --person-bg: #1e3a5f; --org-bg: #2d1b69; --location-bg: #064e3b;
+      --comm-bg: #78350f; --other-bg: #374151; --danger-bg: #7f1d1d;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.6;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  .topbar {
+    display: flex; align-items: center; gap: 16px; padding: 12px 24px;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .topbar h1 { font-size: 16px; font-weight: 600; flex-shrink: 0; }
+  .topbar .shield-icon { font-size: 20px; }
+  .stats { display: flex; gap: 12px; margin-left: 16px; }
+  .stat {
+    display: flex; align-items: center; gap: 4px; font-size: 13px;
+    color: var(--text-secondary); padding: 4px 10px; border-radius: 6px;
+    background: var(--bg);
+  }
+  .stat .count { font-weight: 600; color: var(--text); }
+  .spacer { flex: 1; }
+  .btn {
+    padding: 8px 20px; border-radius: 8px; border: none; cursor: pointer;
+    font-size: 14px; font-weight: 600; transition: all 0.15s;
+  }
+  .btn-approve { background: var(--accent); color: white; }
+  .btn-approve:hover { background: var(--accent-hover); transform: translateY(-1px); }
+  .btn-approve:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+  .btn-reset { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
+  .btn-reset:hover { background: var(--bg); }
+  .instruction-bar {
+    padding: 8px 24px; background: var(--bg); border-bottom: 1px solid var(--border);
+    font-size: 12px; color: var(--text-secondary); line-height: 1.5;
+  }
+  .instruction-bar span:first-child { margin-right: 6px; }
+  .main { display: flex; flex: 1; overflow: hidden; }
+  .doc-panel { flex: 1; overflow-y: auto; padding: 32px 48px; }
+  .doc-content {
+    max-width: 720px; margin: 0 auto; font-size: 15px; line-height: 1.8;
+    white-space: pre-wrap; word-wrap: break-word;
+  }
+  .entity {
+    padding: 1px 4px; border-radius: 4px; cursor: pointer;
+    transition: all 0.15s; position: relative; border-bottom: 2px solid;
+  }
+  .entity:hover { filter: brightness(0.9); }
+  .entity.removed { text-decoration: line-through; opacity: 0.4; border-bottom-style: dashed; }
+  .entity-PERSON, .entity-NRP { background: var(--person-bg); border-color: var(--person); color: var(--person); }
+  .entity-ORG, .entity-ORGANIZATION { background: var(--org-bg); border-color: var(--org); color: var(--org); }
+  .entity-LOCATION { background: var(--location-bg); border-color: var(--location); color: var(--location); }
+  .entity-EMAIL_ADDRESS, .entity-PHONE_NUMBER, .entity-URL, .entity-IP_ADDRESS {
+    background: var(--comm-bg); border-color: var(--comm); color: var(--comm);
+  }
+  .entity-added { border-style: dashed; }
+  .entity-tooltip {
+    display: none; position: absolute; bottom: calc(100% + 4px); left: 50%;
+    transform: translateX(-50%); background: var(--surface); border: 1px solid var(--border);
+    border-radius: 5px; padding: 3px 8px; white-space: nowrap; z-index: 50;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12); font-size: 10px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+    pointer-events: none;
+  }
+  .entity:hover .entity-tooltip { display: block; }
+  .sidebar {
+    width: 320px; border-left: 1px solid var(--border); background: var(--surface);
+    overflow-y: auto; flex-shrink: 0;
+  }
+  .sidebar-header {
+    padding: 16px; border-bottom: 1px solid var(--border);
+    font-size: 13px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.5px; color: var(--text-secondary);
+  }
+  .entity-list { padding: 8px; }
+  .entity-item {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    border-radius: 6px; cursor: pointer; transition: background 0.1s; font-size: 13px;
+  }
+  .entity-item:hover { background: var(--bg); }
+  .entity-item.removed { opacity: 0.4; text-decoration: line-through; }
+  .entity-item .idx { color: var(--text-secondary); font-size: 11px; width: 20px; }
+  .entity-item .type-badge {
+    font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 0.3px; flex-shrink: 0;
+  }
+  .type-PERSON .type-badge, .type-NRP .type-badge { background: var(--person-bg); color: var(--person); }
+  .type-ORG .type-badge, .type-ORGANIZATION .type-badge { background: var(--org-bg); color: var(--org); }
+  .type-LOCATION .type-badge { background: var(--location-bg); color: var(--location); }
+  .type-EMAIL_ADDRESS .type-badge, .type-PHONE_NUMBER .type-badge,
+  .type-URL .type-badge, .type-IP_ADDRESS .type-badge { background: var(--comm-bg); color: var(--comm); }
+  .entity-item .text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .entity-item .score { color: var(--text-secondary); font-size: 11px; }
+  .entity-item .action-btn {
+    flex-shrink: 0; border: none; background: none; cursor: pointer;
+    font-size: 14px; padding: 2px 4px; border-radius: 4px; line-height: 1;
+    transition: background 0.1s;
+  }
+  .entity-item .action-btn:hover { background: var(--bg); }
+  .entity-item .action-btn.remove-btn { color: var(--danger); }
+  .entity-item .action-btn.restore-btn { color: var(--accent); }
+  .sidebar-how {
+    padding: 16px; border-top: 1px solid var(--border); margin-top: 8px;
+    font-size: 12px; color: var(--text-secondary); line-height: 1.8;
+  }
+  .sidebar-how .how-title {
+    text-align: center; font-size: 11px; letter-spacing: 0.5px;
+    color: var(--text-secondary); margin-bottom: 6px;
+  }
+  .sidebar-how .how-item { padding-left: 4px; }
+  .selection-toolbar {
+    display: none; position: fixed; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+    z-index: 200; gap: 4px;
+  }
+  .selection-toolbar.visible { display: flex; }
+  .selection-toolbar .type-btn {
+    padding: 6px 12px; border-radius: 6px; border: none; cursor: pointer;
+    font-size: 12px; font-weight: 500; transition: all 0.1s;
+    background: var(--bg); color: var(--text);
+  }
+  .selection-toolbar .type-btn:hover { filter: brightness(0.9); transform: translateY(-1px); }
+  .selection-toolbar .type-btn.person { background: var(--person-bg); color: var(--person); }
+  .selection-toolbar .type-btn.org { background: var(--org-bg); color: var(--org); }
+  .selection-toolbar .type-btn.location { background: var(--location-bg); color: var(--location); }
+  .selection-toolbar .type-btn.other { background: var(--other-bg); color: var(--other); }
+  .approved-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    z-index: 300; align-items: center; justify-content: center;
+  }
+  .approved-overlay.visible { display: flex; }
+  .approved-card {
+    background: var(--surface); border-radius: 16px; padding: 48px 64px;
+    text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  }
+  .approved-card .checkmark { font-size: 64px; margin-bottom: 16px; }
+  .approved-card h2 { font-size: 24px; margin-bottom: 8px; }
+  .approved-card p { color: var(--text-secondary); font-size: 14px; }
+  .legend {
+    display: flex; gap: 16px; padding: 8px 24px; background: var(--surface);
+    border-top: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); flex-wrap: wrap;
+  }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 3px; }
+  .entity.group-hover { outline: 2px solid currentColor; outline-offset: 1px; }
+  .entity-item.group-hover { background: var(--bg); }
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 20px; box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+    font-size: 13px; color: var(--text); z-index: 400;
+    opacity: 0; transition: opacity 0.2s, transform 0.2s; pointer-events: none;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast .toast-icon { font-size: 16px; }
+  .group-count {
+    font-size: 11px; color: var(--text-secondary); background: var(--bg);
+    padding: 1px 6px; border-radius: 4px; flex-shrink: 0; font-weight: 500;
+  }
+  .entity-item.variant { padding-left: 32px; font-size: 12px; opacity: 0.85; }
+  .entity-item .family-toggle {
+    font-size: 10px; width: 16px; text-align: center; cursor: pointer;
+    color: var(--text-secondary); flex-shrink: 0; user-select: none; transition: transform 0.15s;
+  }
+  .entity-item .family-toggle.collapsed { transform: rotate(-90deg); }
+  .doc-content.html-mode { white-space: normal; }
+  .doc-content.html-mode p { margin-bottom: 0.6em; }
+  .doc-content.html-mode h1 { font-size: 1.5em; font-weight: 700; margin: 0.8em 0 0.4em; }
+  .doc-content.html-mode h2 { font-size: 1.3em; font-weight: 600; margin: 0.7em 0 0.3em; }
+  .doc-content.html-mode h3 { font-size: 1.15em; font-weight: 600; margin: 0.6em 0 0.3em; }
+  .doc-content.html-mode h4 { font-size: 1.05em; font-weight: 600; margin: 0.5em 0 0.2em; }
+  .doc-content.html-mode b, .doc-content.html-mode strong { font-weight: 700; }
+  .doc-content.html-mode i, .doc-content.html-mode em { font-style: italic; }
+  .doc-content.html-mode u { text-decoration: underline; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="shield-icon">&#x1f6e1;</span>
+  <h1>PII Shield Review</h1>
+  <div class="stats">
+    <div class="stat"><span class="count" id="entity-count">0</span>&nbsp;entities</div>
+    <div class="stat"><span class="count" id="removed-count">0</span>&nbsp;removed</div>
+    <div class="stat"><span class="count" id="added-count">0</span>&nbsp;added</div>
+  </div>
+  <div class="spacer"></div>
+  <button class="btn btn-reset" onclick="resetAll()">Reset</button>
+  <button class="btn btn-approve" id="approve-btn" onclick="approve()">Approve</button>
+</div>
+
+<div class="instruction-bar">
+  <span>&#x1f4cb;</span>
+  Review detected PII entities below. <strong>Click</strong> a highlighted entity to remove it (all matching occurrences removed). <strong>Select text</strong> to add missed entities. Click <strong>Approve</strong> when done.
+</div>
+
+<div class="main">
+  <div class="doc-panel">
+    <div class="doc-content" id="doc-content"></div>
+  </div>
+  <div class="sidebar">
+    <div class="sidebar-header">Detected Entities</div>
+    <div class="entity-list" id="entity-list"></div>
+    <div class="sidebar-how">
+      <div class="how-title">&mdash;&mdash; How it works &mdash;&mdash;</div>
+      <div class="how-item">&#x2715; Remove false positive</div>
+      <div class="how-item">&#x21a9; Restore removed entity</div>
+      <div class="how-item">&#x25bc; Expand/collapse variants</div>
+    </div>
+  </div>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--person)"></div> Person</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--org)"></div> Organization</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--location)"></div> Location</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--comm)"></div> Contact</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--other)"></div> Other</div>
+  <div class="spacer"></div>
+  <div class="legend-item" style="color:var(--text-secondary)">Click entity to remove all occurrences &middot; Select text to add</div>
+</div>
+
+<div class="selection-toolbar" id="selection-toolbar">
+  <button class="type-btn person" onclick="addEntity('PERSON')">Person</button>
+  <button class="type-btn org" onclick="addEntity('ORGANIZATION')">Org</button>
+  <button class="type-btn location" onclick="addEntity('LOCATION')">Location</button>
+  <button class="type-btn other" onclick="addEntity('OTHER')">Other</button>
+</div>
+
+<div class="toast" id="toast"><span class="toast-icon"></span><span class="toast-text"></span></div>
+
+<div class="approved-overlay" id="approved-overlay">
+  <div class="approved-card">
+    <div class="checkmark">&#x2705;</div>
+    <h2>Review Approved</h2>
+    <p>You can close this tab. Claude will continue with the analysis.</p>
+  </div>
+</div>
+
+<script>
+let SESSION_ID = 'demo';
+let originalText = '';
+let originalHtml = '';
+let entities = [];
+let removedIndices = new Set();
+let addedEntities = [];
+let formatRuns = [];
+let blockMap = [];
+let collapsedFamilies = new Set();
+const API_BASE = '';
+
+// ---- Entity position finder ----
+function findAll(text, search, type, score) {
+  const results = [];
+  let pos = 0;
+  while ((pos = text.indexOf(search, pos)) !== -1) {
+    results.push({type, text:search, start:pos, end:pos+search.length, score, verified:true});
+    pos += search.length;
+  }
+  return results;
+}
+
+// ---- MOCK DATA ----
+function init() {
+  // Simulated docx with formatting
+  originalText = "CONSULTING SERVICES AGREEMENT\nThis Consulting Services Agreement (the \"Agreement\") is entered into as of January 15, 2024, by and between Acme Corporation, a Delaware corporation (\"Company\"), and John Smith, an individual residing in New York, New York (\"Consultant\").\n1. SERVICES\nConsultant agrees to provide strategic consulting services to Acme Corporation (hereinafter \"Acme\" or \"Acme Corp.\") at its principal offices located at 123 Broadway, Suite 400, New York, NY 10001.\nThe Consultant, John Smith, shall report directly to Sarah Johnson, Chief Operating Officer of Acme Corporation. Sarah Johnson may delegate oversight responsibilities to Michael Chen, VP of Strategy.\n2. COMPENSATION\nAcme Corporation shall pay Consultant a fee of $15,000 per month. Payments shall be made to John Smith at the following address: 456 Park Avenue, Apt 12B, New York, NY 10022. For inquiries, contact j.smith@email.com or call (212) 555-0147.\n3. CONFIDENTIALITY\nConsultant acknowledges that during the engagement with Acme Corporation, Consultant may have access to proprietary information. John Smith agrees not to disclose any confidential information to third parties, including but not limited to GlobalTech Industries or any affiliate of GlobalTech Ltd.\n4. TERM AND TERMINATION\nThis Agreement shall commence on January 15, 2024 and continue for twelve (12) months. Either party may terminate upon 30 days written notice. All notices shall be sent to Sarah Johnson at Acme Corporation, 123 Broadway, Suite 400, New York, NY 10001.";
+
+  originalHtml = "<h1><b>CONSULTING SERVICES AGREEMENT</b></h1>\n<p>This <b>Consulting Services Agreement</b> (the \"Agreement\") is entered into as of January 15, 2024, by and between <b>Acme Corporation</b>, a Delaware corporation (\"Company\"), and <b>John Smith</b>, an individual residing in <i>New York, New York</i> (\"Consultant\").</p>\n<h2><b>1. SERVICES</b></h2>\n<p>Consultant agrees to provide strategic consulting services to <b>Acme Corporation</b> (hereinafter \"Acme\" or \"Acme Corp.\") at its principal offices located at <u>123 Broadway, Suite 400, New York, NY 10001</u>.</p>\n<p>The Consultant, <b>John Smith</b>, shall report directly to <b>Sarah Johnson</b>, Chief Operating Officer of <b>Acme Corporation</b>. <b>Sarah Johnson</b> may delegate oversight responsibilities to <b>Michael Chen</b>, VP of Strategy.</p>\n<h2><b>2. COMPENSATION</b></h2>\n<p><b>Acme Corporation</b> shall pay Consultant a fee of $15,000 per month. Payments shall be made to <b>John Smith</b> at the following address: <u>456 Park Avenue, Apt 12B, New York, NY 10022</u>. For inquiries, contact <u>j.smith@email.com</u> or call <u>(212) 555-0147</u>.</p>\n<h2><b>3. CONFIDENTIALITY</b></h2>\n<p>Consultant acknowledges that during the engagement with <b>Acme Corporation</b>, Consultant may have access to proprietary information. <b>John Smith</b> agrees not to disclose any confidential information to third parties, including but not limited to <b>GlobalTech Industries</b> or any affiliate of <b>GlobalTech Ltd.</b></p>\n<h2><b>4. TERM AND TERMINATION</b></h2>\n<p>This Agreement shall commence on January 15, 2024 and continue for twelve (12) months. Either party may terminate upon 30 days written notice. All notices shall be sent to <b>Sarah Johnson</b> at <b>Acme Corporation</b>, <u>123 Broadway, Suite 400, New York, NY 10001</u>.</p>";
+
+  // Build entity list programmatically using indexOf
+  const rawEntities = [
+    ...findAll(originalText, "Acme Corporation", "ORGANIZATION", 0.95),
+    ...findAll(originalText, "Acme Corp.", "ORGANIZATION", 0.91),
+    ...findAll(originalText, "GlobalTech Industries", "ORGANIZATION", 0.89),
+    ...findAll(originalText, "GlobalTech Ltd.", "ORGANIZATION", 0.87),
+    ...findAll(originalText, "John Smith", "PERSON", 0.97),
+    ...findAll(originalText, "Sarah Johnson", "PERSON", 0.96),
+    ...findAll(originalText, "Michael Chen", "PERSON", 0.93),
+    ...findAll(originalText, "New York", "LOCATION", 0.92),
+    ...findAll(originalText, "j.smith@email.com", "EMAIL_ADDRESS", 0.99),
+    ...findAll(originalText, "(212) 555-0147", "PHONE_NUMBER", 0.98),
+  ];
+
+  // Remove overlapping: sort by start, keep non-overlapping
+  rawEntities.sort((a,b) => a.start - b.start || b.end - a.end);
+  const deduped = [];
+  let lastE = 0;
+  for (const e of rawEntities) {
+    if (e.start >= lastE) { deduped.push(e); lastE = e.end; }
+  }
+  entities = deduped.map((e,i) => ({...e, idx:i}));
+
+  if (originalHtml) parseHtmlFormatting(originalHtml);
+  render();
+}
+
+function parseHtmlFormatting(html) {
+  const temp = document.createElement('div');
+  temp.innerHTML = html;
+  formatRuns = [];
+  blockMap = [];
+  let charPos = 0;
+  for (const block of temp.children) {
+    const tag = block.tagName.toLowerCase();
+    const blockStart = charPos;
+    function walkNode(node, inherited) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.textContent;
+        if (text.length > 0) {
+          if (inherited.bold || inherited.italic || inherited.underline) {
+            formatRuns.push({ start: charPos, end: charPos + text.length, ...inherited });
+          }
+          charPos += text.length;
+        }
+        return;
+      }
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const t = node.tagName.toLowerCase();
+        if (t === 'br') { charPos++; return; }
+        const next = { ...inherited };
+        if (t === 'b' || t === 'strong') next.bold = true;
+        if (t === 'i' || t === 'em') next.italic = true;
+        if (t === 'u') next.underline = true;
+        for (const child of node.childNodes) walkNode(child, next);
+      }
+    }
+    walkNode(block, { bold: false, italic: false, underline: false });
+    blockMap.push({ start: blockStart, end: charPos, tag });
+    charPos++;
+  }
+}
+
+function getEntityClass(type) {
+  if (['PERSON', 'NRP'].includes(type)) return 'entity-PERSON';
+  if (['ORGANIZATION', 'ORG'].includes(type)) return 'entity-ORG';
+  if (type === 'LOCATION') return 'entity-LOCATION';
+  if (['EMAIL_ADDRESS', 'PHONE_NUMBER', 'URL', 'IP_ADDRESS'].includes(type)) return 'entity-EMAIL_ADDRESS';
+  return 'entity-OTHER';
+}
+function getTypeClass(type) {
+  if (['PERSON', 'NRP'].includes(type)) return 'type-PERSON';
+  if (['ORGANIZATION', 'ORG'].includes(type)) return 'type-ORG';
+  if (type === 'LOCATION') return 'type-LOCATION';
+  if (['EMAIL_ADDRESS', 'PHONE_NUMBER', 'URL', 'IP_ADDRESS'].includes(type)) return 'type-EMAIL_ADDRESS';
+  return 'type-OTHER';
+}
+function makeGroupKey(type, text) {
+  const norm = (text || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
+  return `${type}__${norm}`;
+}
+function render() { renderDocument(); renderSidebar(); updateStats(); }
+
+function renderDocument() {
+  const container = document.getElementById('doc-content');
+  const hasHtml = formatRuns.length > 0 || blockMap.length > 0;
+  container.classList.toggle('html-mode', hasHtml);
+  const allEntities = [
+    ...entities.filter(e => e.verified).map(e => ({...e, source:'original'})),
+    ...addedEntities.map((e,i) => ({...e, idx:`added_${i}`, source:'added', score:1.0}))
+  ].sort((a,b) => a.start - b.start);
+  const segments = buildSegments(allEntities);
+  if (hasHtml && blockMap.length > 0) {
+    let html = '';
+    for (const block of blockMap) {
+      html += `<${block.tag}>`;
+      html += renderSegmentsRange(segments, block.start, block.end);
+      html += `</${block.tag}>`;
+    }
+    container.innerHTML = html;
+  } else {
+    container.innerHTML = renderSegmentsRange(segments, 0, originalText.length);
+  }
+}
+
+function buildSegments(allEntities) {
+  const points = new Set([0, originalText.length]);
+  for (const e of allEntities) { if (e.start >= 0) { points.add(e.start); points.add(e.end); } }
+  for (const f of formatRuns) { points.add(f.start); points.add(f.end); }
+  const sorted = Array.from(points).sort((a,b) => a - b);
+  const segments = [];
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const start = sorted[i], end = sorted[i+1];
+    if (start >= end) continue;
+    const entity = allEntities.find(e => e.start <= start && end <= e.end);
+    const fmt = formatRuns.find(f => f.start <= start && end <= f.end) || {};
+    segments.push({ start, end, entity, bold:!!fmt.bold, italic:!!fmt.italic, underline:!!fmt.underline });
+  }
+  return segments;
+}
+
+function renderSegmentsRange(segments, rangeStart, rangeEnd) {
+  let html = '';
+  let currentEntity = null;
+  for (const seg of segments) {
+    if (seg.end <= rangeStart || seg.start >= rangeEnd) continue;
+    const s = Math.max(seg.start, rangeStart);
+    const e = Math.min(seg.end, rangeEnd);
+    const text = escapeHtml(originalText.slice(s, e));
+    let formatted = text;
+    if (seg.bold) formatted = `<b>${formatted}</b>`;
+    if (seg.italic) formatted = `<i>${formatted}</i>`;
+    if (seg.underline) formatted = `<u>${formatted}</u>`;
+    if (seg.entity) {
+      if (currentEntity !== seg.entity) {
+        if (currentEntity) html += currentEntity._tooltipHtml + `</span>`;
+        const ent = seg.entity;
+        const isRemoved = ent.source === 'original' && removedIndices.has(ent.idx);
+        const isAdded = ent.source === 'added';
+        const cls = `entity ${getEntityClass(ent.type)} ${isRemoved ? 'removed' : ''} ${isAdded ? 'entity-added' : ''}`;
+        const groupKey = makeGroupKey(ent.type, ent.text);
+        const groupCount = ent.source === 'original' ? entities.filter(x => x.verified && makeGroupKey(x.type, x.text) === groupKey).length : 1;
+        const allLabel = groupCount > 1 ? ` all ${groupCount}` : '';
+        html += `<span class="${cls}" data-idx="${ent.idx}" data-source="${ent.source}" data-group-key="${groupKey}" onclick="toggleEntity(this)" onmouseenter="highlightGroup('${groupKey}')" onmouseleave="unhighlightGroup('${groupKey}')">`;
+        currentEntity = seg.entity;
+        currentEntity._tooltipHtml = buildTooltipHtml(ent, isRemoved, isAdded, groupCount, allLabel, ent.idx);
+      }
+      html += formatted;
+    } else {
+      if (currentEntity) { html += currentEntity._tooltipHtml + `</span>`; currentEntity = null; }
+      html += formatted;
+    }
+  }
+  if (currentEntity) html += currentEntity._tooltipHtml + `</span>`;
+  return html;
+}
+
+function buildTooltipHtml(e, isRemoved, isAdded, groupCount, allLabel, dataIdx) {
+  const label = e.type.replace('_', ' ');
+  return `<span class="entity-tooltip">${label}</span>`;
+}
+
+function buildFamilies(confirmedEntities) {
+  const families = [];
+  for (const e of confirmedEntities) {
+    const norm = e.text.trim().toLowerCase();
+    const type = e.type;
+    let found = null;
+    if (norm.length >= 4) {
+      for (const fam of families) {
+        if (fam.type !== type) continue;
+        if (fam.rootNorm.length >= 4 && (norm.includes(fam.rootNorm) || fam.rootNorm.includes(norm))) { found = fam; break; }
+        const w1 = norm.split(/\s+/)[0], w2 = fam.rootNorm.split(/\s+/)[0];
+        if (w1.length >= 4 && w1 === w2) { found = fam; break; }
+      }
+    }
+    if (found) {
+      const existing = found.members.find(m => m.norm === norm);
+      if (existing) { existing.indices.push(e.idx); }
+      else {
+        found.members.push({text:e.text, norm, indices:[e.idx], score:e.score});
+        if (norm.length < found.rootNorm.length) { found.rootText = e.text; found.rootNorm = norm; }
+      }
+    } else {
+      families.push({type, rootText:e.text, rootNorm:norm, members:[{text:e.text, norm, indices:[e.idx], score:e.score}]});
+    }
+  }
+  for (const fam of families) {
+    fam.members.sort((a,b) => { if (a.norm === fam.rootNorm) return -1; if (b.norm === fam.rootNorm) return 1; return a.text.localeCompare(b.text); });
+  }
+  return families;
+}
+
+function renderSidebar() {
+  const list = document.getElementById('entity-list');
+  const confirmedEntities = entities.filter(e => e.verified);
+  const families = buildFamilies(confirmedEntities);
+
+  if (families.length === 0 && addedEntities.length === 0) {
+    list.innerHTML = '<div style="padding:24px 16px;text-align:center;color:var(--text-secondary);font-size:13px;">No PII entities detected in this document.</div>';
+    return;
+  }
+  let html = '';
+  for (const fam of families) {
+    const allIndices = fam.members.flatMap(m => m.indices);
+    const totalCount = allIndices.length;
+    const allRemoved = allIndices.every(i => removedIndices.has(i));
+    const hasVariants = fam.members.length > 1;
+    const familyKey = makeGroupKey(fam.type, fam.rootText);
+    const isCollapsed = collapsedFamilies.has(familyKey);
+    const root = fam.members[0];
+    const firstIdx = root.indices[0];
+    html += `<div class="entity-item ${getTypeClass(fam.type)} ${allRemoved?'removed':''}" data-group-key="${familyKey}" onclick="scrollToEntity(${firstIdx})" onmouseenter="highlightGroup('${familyKey}')" onmouseleave="unhighlightGroup('${familyKey}')">`;
+    if (hasVariants) html += `<span class="family-toggle ${isCollapsed?'collapsed':''}" onclick="event.stopPropagation(); toggleFamily('${familyKey}')">&#x25BC;</span>`;
+    html += `<span class="type-badge">${fam.type}</span>`;
+    html += `<span class="text">${escapeHtml(root.text)}</span>`;
+    if (totalCount > 1) html += `<span class="group-count">&times;${totalCount}</span>`;
+    html += `<span class="score">${(root.score*100).toFixed(0)}%</span>`;
+    if (hasVariants) {
+      if (allRemoved) {
+        html += `<button class="action-btn restore-btn" title="Restore all" onclick="event.stopPropagation(); restoreFamilyAll([${allIndices.join(',')}])">&#x21a9;</button>`;
+      } else {
+        html += `<button class="action-btn remove-btn" title="Remove all" onclick="event.stopPropagation(); removeFamilyAll([${allIndices.join(',')}])">&#x2715;</button>`;
+      }
+    } else {
+      if (allRemoved) {
+        html += `<button class="action-btn restore-btn" title="Restore" onclick="event.stopPropagation(); restoreEntity(${firstIdx})">&#x21a9;</button>`;
+      } else {
+        html += `<button class="action-btn remove-btn" title="Remove" onclick="event.stopPropagation(); removeEntity(${firstIdx})">&#x2715;</button>`;
+      }
+    }
+    html += `</div>`;
+    if (hasVariants && !isCollapsed) {
+      for (let i = 1; i < fam.members.length; i++) {
+        const m = fam.members[i];
+        const vk = makeGroupKey(fam.type, m.text);
+        const vr = m.indices.every(idx => removedIndices.has(idx));
+        html += `<div class="entity-item variant ${getTypeClass(fam.type)} ${vr?'removed':''}" data-group-key="${vk}" onclick="scrollToEntity(${m.indices[0]})" onmouseenter="highlightGroup('${vk}')" onmouseleave="unhighlightGroup('${vk}')">`;
+        html += `<span class="type-badge" style="font-size:9px">${String.fromCharCode(96+i)}</span>`;
+        html += `<span class="text">${escapeHtml(m.text)}</span>`;
+        if (m.indices.length > 1) html += `<span class="group-count">&times;${m.indices.length}</span>`;
+        html += `<span class="score">${(m.score*100).toFixed(0)}%</span>`;
+        if (vr) {
+          html += `<button class="action-btn restore-btn" title="Restore" onclick="event.stopPropagation(); restoreEntity(${m.indices[0]})">&#x21a9;</button>`;
+        } else {
+          html += `<button class="action-btn remove-btn" title="Remove" onclick="event.stopPropagation(); removeEntity(${m.indices[0]})">&#x2715;</button>`;
+        }
+        html += `</div>`;
+      }
+    }
+  }
+  if (addedEntities.length > 0) {
+    // Group added entities by type+text
+    const addedGroups = [];
+    for (let i = 0; i < addedEntities.length; i++) {
+      const e = addedEntities[i];
+      const key = makeGroupKey(e.type, e.text);
+      const existing = addedGroups.find(g => g.key === key);
+      if (existing) { existing.indices.push(i); }
+      else { addedGroups.push({ key, type: e.type, text: e.text, indices: [i] }); }
+    }
+    html += `<div class="sidebar-header" style="margin-top:8px;padding:8px 12px">Added by you</div>`;
+    for (const group of addedGroups) {
+      const count = group.indices.length;
+      html += `<div class="entity-item ${getTypeClass(group.type)}">`;
+      html += `<span class="idx">+</span><span class="type-badge">${group.type}</span>`;
+      html += `<span class="text">${escapeHtml(group.text)}</span>`;
+      if (count > 1) html += `<span class="group-count">&times;${count}</span>`;
+      html += `<button class="action-btn remove-btn" title="Remove all" onclick="event.stopPropagation(); removeAddedGroup('${group.key}')">&#x2715;</button>`;
+      html += `</div>`;
+    }
+  }
+  list.innerHTML = html;
+}
+
+function toggleFamily(fk) { if (collapsedFamilies.has(fk)) collapsedFamilies.delete(fk); else collapsedFamilies.add(fk); renderSidebar(); }
+
+function updateStats() {
+  const confirmed = entities.filter(e => e.verified).length;
+  document.getElementById('entity-count').textContent = confirmed - removedIndices.size + addedEntities.length;
+  document.getElementById('removed-count').textContent = removedIndices.size;
+  document.getElementById('added-count').textContent = addedEntities.length;
+}
+
+function toggleEntity(el) {
+  const source = el.dataset.source, idx = el.dataset.idx;
+  if (source === 'original') { const n = parseInt(idx); if (removedIndices.has(n)) restoreEntity(n); else removeEntity(n); }
+  else if (source === 'added') removeAdded(parseInt(idx.replace('added_','')));
+}
+
+function removeEntity(idx) {
+  const entity = entities.find(e => e.idx === idx);
+  if (entity) {
+    const normText = entity.text.trim().toLowerCase(), type = entity.type;
+    let count = 0;
+    for (const e of entities) { if (e.verified && e.text.trim().toLowerCase() === normText && e.type === type) { removedIndices.add(e.idx); count++; } }
+    showToast(`Removed${count > 1 ? ` ${count} occurrences of` : ''} "${entity.text}"`, 'remove');
+  } else removedIndices.add(idx);
+  render();
+}
+
+function restoreEntity(idx) {
+  const entity = entities.find(e => e.idx === idx);
+  if (entity) {
+    const normText = entity.text.trim().toLowerCase(), type = entity.type;
+    let count = 0;
+    for (const e of entities) { if (e.text.trim().toLowerCase() === normText && e.type === type) { removedIndices.delete(e.idx); count++; } }
+    showToast(`Restored${count > 1 ? ` ${count} occurrences of` : ''} "${entity.text}"`, 'restore');
+  } else removedIndices.delete(idx);
+  render();
+}
+
+function highlightGroup(gk) { document.querySelectorAll(`[data-group-key="${gk}"]`).forEach(el => el.classList.add('group-hover')); }
+function unhighlightGroup(gk) { document.querySelectorAll(`[data-group-key="${gk}"]`).forEach(el => el.classList.remove('group-hover')); }
+
+let toastTimer = null;
+function showToast(message, type) {
+  const toast = document.getElementById('toast');
+  toast.querySelector('.toast-icon').textContent = type === 'remove' ? '\u2796' : '\u2795';
+  toast.querySelector('.toast-text').textContent = message;
+  toast.classList.add('visible');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('visible'), 2500);
+}
+
+function removeAdded(idx) { addedEntities.splice(idx, 1); render(); }
+function removeAddedGroup(groupKey) {
+  addedEntities = addedEntities.filter(e => makeGroupKey(e.type, e.text) !== groupKey);
+  render();
+}
+function removeFamilyAll(indices) {
+  for (const idx of indices) removedIndices.add(idx);
+  showToast(`Removed ${indices.length} entities (all variants)`, 'remove');
+  render();
+}
+function restoreFamilyAll(indices) {
+  for (const idx of indices) removedIndices.delete(idx);
+  showToast(`Restored ${indices.length} entities (all variants)`, 'restore');
+  render();
+}
+function resetAll() {
+  if (removedIndices.size === 0 && addedEntities.length === 0) return;
+  if (!confirm('Reset all changes? This will restore all removed entities and discard added ones.')) return;
+  removedIndices.clear(); addedEntities = [];
+  showToast('All changes reset', 'restore');
+  render();
+}
+
+let pendingSelection = null, toolbarShownAt = 0;
+function showToolbarForSelection(e) {
+  const toolbar = document.getElementById('selection-toolbar');
+  const sel = window.getSelection();
+  const text = sel.toString().trim();
+  if (!text || text.length < 2 || e.target.closest('.selection-toolbar') || e.target.closest('.sidebar')) {
+    if (!e.target.closest('.selection-toolbar')) toolbar.classList.remove('visible'); return;
+  }
+  const range = sel.getRangeAt(0);
+  const container = document.getElementById('doc-content');
+  if (!container.contains(range.commonAncestorContainer)) { toolbar.classList.remove('visible'); return; }
+  const start = originalText.indexOf(text);
+  if (start === -1) { toolbar.classList.remove('visible'); return; }
+  pendingSelection = {text, start, end: start + text.length};
+  const rect = range.getBoundingClientRect();
+  const toolbarW = 260;
+  let left = rect.left + rect.width / 2 - toolbarW / 2;
+  let top = rect.top - 44;
+  left = Math.max(8, Math.min(left, window.innerWidth - toolbarW - 8));
+  if (top < 8) top = rect.bottom + 8;
+  toolbar.style.left = `${left}px`;
+  toolbar.style.top = `${top}px`;
+  toolbar.classList.add('visible');
+  toolbarShownAt = Date.now();
+}
+document.addEventListener('mouseup', showToolbarForSelection);
+document.addEventListener('dblclick', (e) => { setTimeout(() => showToolbarForSelection(e), 10); });
+
+function addEntity(type) {
+  if (!pendingSelection) return;
+  const searchText = pendingSelection.text;
+  const newLen = searchText.length;
+  let pos = 0;
+  let count = 0;
+  while ((pos = originalText.indexOf(searchText, pos)) !== -1) {
+    const newStart = pos, newEnd = pos + newLen;
+
+    const overlappingOriginals = entities.filter(e =>
+      e.verified && !removedIndices.has(e.idx) && e.start < newEnd && e.end > newStart);
+    const overlappingAdded = addedEntities.filter(e => e.start < newEnd && e.end > newStart);
+
+    // Skip if any overlapping entity covers same or more text
+    const blockedByExisting = overlappingOriginals.some(e => (e.end - e.start) >= newLen)
+      || overlappingAdded.some(e => (e.end - e.start) >= newLen);
+
+    if (blockedByExisting) { pos += newLen; continue; }
+
+    // Remove shorter/equal overlapping entities (new one supersedes)
+    for (const e of overlappingOriginals) removedIndices.add(e.idx);
+    addedEntities = addedEntities.filter(e => !(e.start < newEnd && e.end > newStart));
+
+    addedEntities.push({ text: searchText, type, start: newStart, end: newEnd });
+    count++;
+    pos += newLen;
+  }
+  if (count > 1) showToast(`Added ${count} occurrences of "${searchText}"`, 'restore');
+  pendingSelection = null;
+  document.getElementById('selection-toolbar').classList.remove('visible');
+  window.getSelection().removeAllRanges();
+  render();
+}
+
+function approve() { document.getElementById('approved-overlay').classList.add('visible'); }
+function scrollToEntity(idx) {
+  const el = document.querySelector(`.entity[data-idx="${idx}"][data-source="original"]`);
+  if (el) el.scrollIntoView({behavior:'smooth', block:'center'});
+}
+function escapeHtml(str) { const div = document.createElement('div'); div.textContent = str; return div.innerHTML; }
+
+document.addEventListener('mousedown', (e) => {
+  if (!e.target.closest('.selection-toolbar')) {
+    setTimeout(() => { if (Date.now() - toolbarShownAt < 400) return; if (!e.target.closest('.selection-toolbar')) document.getElementById('selection-toolbar').classList.remove('visible'); }, 300);
+  }
+});
+
+init();
+</script>
+</body>
+</html>

@@ -12,15 +12,21 @@
     --org: #8b5cf6; --org-bg: #ede9fe;
     --location: #10b981; --location-bg: #d1fae5;
     --comm: #f59e0b; --comm-bg: #fef3c7;
+    --financial: #ef4444; --financial-bg: #fee2e2;
+    --id-doc: #ec4899; --id-doc-bg: #fce7f3;
+    --medical: #14b8a6; --medical-bg: #ccfbf1;
     --other: #6b7280; --other-bg: #f3f4f6;
     --danger: #ef4444; --danger-bg: #fee2e2;
+    --added: #0ea5e9; --added-bg: #e0f2fe;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #0f172a; --surface: #1e293b; --text: #e2e8f0; --text-secondary: #94a3b8;
       --border: #334155;
       --person-bg: #1e3a5f; --org-bg: #2d1b69; --location-bg: #064e3b;
-      --comm-bg: #78350f; --other-bg: #374151; --danger-bg: #7f1d1d;
+      --comm-bg: #78350f; --financial-bg: #7f1d1d; --id-doc-bg: #831843;
+      --medical-bg: #134e4a; --other-bg: #374151; --danger-bg: #7f1d1d;
+      --added-bg: #0c4a6e;
     }
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -82,13 +88,15 @@
     text-decoration: line-through; opacity: 0.4;
     border-bottom-style: dashed;
   }
-  .entity-PERSON, .entity-NRP { background: var(--person-bg); border-color: var(--person); color: var(--person); }
-  .entity-ORG, .entity-ORGANIZATION { background: var(--org-bg); border-color: var(--org); color: var(--org); }
+  .entity-PERSON { background: var(--person-bg); border-color: var(--person); color: var(--person); }
+  .entity-ORG { background: var(--org-bg); border-color: var(--org); color: var(--org); }
   .entity-LOCATION { background: var(--location-bg); border-color: var(--location); color: var(--location); }
-  .entity-EMAIL_ADDRESS, .entity-PHONE_NUMBER, .entity-URL, .entity-IP_ADDRESS {
-    background: var(--comm-bg); border-color: var(--comm); color: var(--comm);
-  }
-  .entity-added { border-style: dashed; }
+  .entity-COMM { background: var(--comm-bg); border-color: var(--comm); color: var(--comm); }
+  .entity-FINANCIAL { background: var(--financial-bg); border-color: var(--financial); color: var(--financial); }
+  .entity-ID_DOC { background: var(--id-doc-bg); border-color: var(--id-doc); color: var(--id-doc); }
+  .entity-MEDICAL { background: var(--medical-bg); border-color: var(--medical); color: var(--medical); }
+  .entity-OTHER { background: var(--other-bg); border-color: var(--other); color: var(--other); }
+  .entity-added { border-style: dashed; background: var(--added-bg) !important; border-color: var(--added) !important; color: var(--added) !important; }
 
   /* Entity Tooltip — minimal type label on hover */
   .entity-tooltip {
@@ -124,11 +132,14 @@
     font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px;
     text-transform: uppercase; letter-spacing: 0.3px; flex-shrink: 0;
   }
-  .type-PERSON .type-badge, .type-NRP .type-badge { background: var(--person-bg); color: var(--person); }
-  .type-ORG .type-badge, .type-ORGANIZATION .type-badge { background: var(--org-bg); color: var(--org); }
+  .type-PERSON .type-badge { background: var(--person-bg); color: var(--person); }
+  .type-ORG .type-badge { background: var(--org-bg); color: var(--org); }
   .type-LOCATION .type-badge { background: var(--location-bg); color: var(--location); }
-  .type-EMAIL_ADDRESS .type-badge, .type-PHONE_NUMBER .type-badge,
-  .type-URL .type-badge, .type-IP_ADDRESS .type-badge { background: var(--comm-bg); color: var(--comm); }
+  .type-COMM .type-badge { background: var(--comm-bg); color: var(--comm); }
+  .type-FINANCIAL .type-badge { background: var(--financial-bg); color: var(--financial); }
+  .type-ID_DOC .type-badge { background: var(--id-doc-bg); color: var(--id-doc); }
+  .type-MEDICAL .type-badge { background: var(--medical-bg); color: var(--medical); }
+  .type-OTHER .type-badge { background: var(--other-bg); color: var(--other); }
   .entity-item .text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .entity-item .score { color: var(--text-secondary); font-size: 11px; }
 
@@ -136,7 +147,7 @@
   .selection-toolbar {
     display: none; position: fixed; background: var(--surface); border: 1px solid var(--border);
     border-radius: 10px; padding: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.2);
-    z-index: 200; gap: 4px;
+    z-index: 200; gap: 4px; flex-wrap: wrap;
   }
   .selection-toolbar.visible { display: flex; }
   .selection-toolbar .type-btn {
@@ -148,7 +159,33 @@
   .selection-toolbar .type-btn.person { background: var(--person-bg); color: var(--person); }
   .selection-toolbar .type-btn.org { background: var(--org-bg); color: var(--org); }
   .selection-toolbar .type-btn.location { background: var(--location-bg); color: var(--location); }
+  .selection-toolbar .type-btn.comm { background: var(--comm-bg); color: var(--comm); }
+  .selection-toolbar .type-btn.financial { background: var(--financial-bg); color: var(--financial); }
+  .selection-toolbar .type-btn.id-doc { background: var(--id-doc-bg); color: var(--id-doc); }
+  .selection-toolbar .type-btn.medical { background: var(--medical-bg); color: var(--medical); }
   .selection-toolbar .type-btn.other { background: var(--other-bg); color: var(--other); }
+  .selection-toolbar .type-btn-more {
+    padding: 6px 8px; border-radius: 6px; border: none; cursor: pointer;
+    font-size: 14px; font-weight: 600; background: var(--bg); color: var(--text-secondary);
+    transition: all 0.1s; line-height: 1;
+  }
+  .selection-toolbar .type-btn-more:hover { background: var(--border); }
+  .type-dropdown {
+    display: none; position: absolute; bottom: calc(100% + 4px); right: 0;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); z-index: 210;
+    max-height: 280px; overflow-y: auto; min-width: 200px;
+  }
+  .type-dropdown.visible { display: block; }
+  .type-dropdown-group { padding: 4px 8px; font-size: 10px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.5px; color: var(--text-secondary); margin-top: 4px; }
+  .type-dropdown-group:first-child { margin-top: 0; }
+  .type-dropdown-item {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 5px;
+    cursor: pointer; font-size: 12px; transition: background 0.1s;
+  }
+  .type-dropdown-item:hover { background: var(--bg); }
+  .type-dropdown-item .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 
   /* Approved Overlay */
   .approved-overlay {
@@ -258,6 +295,41 @@
   .how-it-works .hint { display: flex; align-items: center; gap: 6px; }
   .how-it-works .hint-icon { width: 16px; text-align: center; flex-shrink: 0; }
 
+  /* Keyboard focus */
+  .entity.focused { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+  .entity-item.focused { background: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); outline: 2px solid var(--accent); outline-offset: -2px; }
+  .kbd { display: inline-block; font-size: 10px; font-family: monospace; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 3px; padding: 0px 4px; margin-right: 2px;
+    font-weight: 600; line-height: 1.6; min-width: 16px; text-align: center; }
+
+  /* Split view */
+  .btn-split { padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border);
+    cursor: pointer; font-size: 12px; font-weight: 500; background: var(--bg); color: var(--text-secondary);
+    transition: all 0.15s; }
+  .btn-split:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-split.active { background: var(--accent); color: white; border-color: var(--accent); }
+  .doc-panel { position: relative; }
+  .main.split-view .doc-panel { display: flex; gap: 0; padding: 0; }
+  .doc-pane { flex: 1; overflow-y: auto; padding: 32px 24px; }
+  .doc-pane .doc-content { max-width: none; }
+  .doc-pane-anon { border-left: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 60%, var(--surface)); }
+  .doc-pane-label { position: sticky; top: 0; z-index: 10; padding: 8px 24px; font-size: 11px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary);
+    background: var(--surface); border-bottom: 1px solid var(--border); }
+  .main:not(.split-view) .doc-pane-orig { display: contents; }
+  .main:not(.split-view) .doc-pane-orig .doc-pane-label { display: none; }
+  .main:not(.split-view) .doc-pane-anon { display: none; }
+  /* Anonymized text placeholder highlights */
+  .anon-placeholder { padding: 1px 4px; border-radius: 3px; font-weight: 500; font-size: 0.9em; }
+  .anon-placeholder.ph-PERSON { background: var(--person-bg); color: var(--person); }
+  .anon-placeholder.ph-ORG { background: var(--org-bg); color: var(--org); }
+  .anon-placeholder.ph-LOCATION { background: var(--location-bg); color: var(--location); }
+  .anon-placeholder.ph-COMM { background: var(--comm-bg); color: var(--comm); }
+  .anon-placeholder.ph-FINANCIAL { background: var(--financial-bg); color: var(--financial); }
+  .anon-placeholder.ph-ID_DOC { background: var(--id-doc-bg); color: var(--id-doc); }
+  .anon-placeholder.ph-MEDICAL { background: var(--medical-bg); color: var(--medical); }
+  .anon-placeholder.ph-OTHER { background: var(--other-bg); color: var(--other); }
+
   /* Scrollbar */
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -275,6 +347,7 @@
     <div class="stat"><span class="count" id="added-count">0</span>&nbsp;added</div>
   </div>
   <div class="spacer"></div>
+  <button class="btn-split" id="split-btn" onclick="toggleSplitView()" title="Toggle side-by-side view (original vs anonymized)">Split View</button>
   <button class="btn btn-reset" onclick="resetAll()">Reset</button>
   <button class="btn btn-approve" id="approve-btn" onclick="approve()">Approve</button>
 </div>
@@ -284,19 +357,31 @@
   <span>Review detected PII entities below. <strong>Click</strong> a highlighted entity to remove it (all matching occurrences removed). <strong>Select text</strong> to add missed entities. Click <strong>Approve</strong> when done.</span>
 </div>
 
-<div class="main">
+<div class="main" id="main-container">
   <div class="doc-panel">
-    <div class="doc-content" id="doc-content"></div>
+    <div class="doc-pane doc-pane-orig">
+      <div class="doc-pane-label">Original (with entities)</div>
+      <div class="doc-content" id="doc-content"></div>
+    </div>
+    <div class="doc-pane doc-pane-anon">
+      <div class="doc-pane-label">Anonymized</div>
+      <div class="doc-content" id="doc-content-anon"></div>
+    </div>
   </div>
   <div class="sidebar" style="display:flex;flex-direction:column;">
     <div class="sidebar-header">Detected Entities</div>
     <div class="entity-list" id="entity-list" style="flex:1;overflow-y:auto;"></div>
     <div class="how-it-works">
-      <div class="section-title">How it works</div>
-      <div class="hint"><span class="hint-icon">&#x2715;</span> Remove false positive</div>
-      <div class="hint"><span class="hint-icon">&#x21A9;</span> Restore removed entity</div>
-      <div class="hint"><span class="hint-icon">&#x25BC;</span> Expand/collapse variants</div>
-      <div class="hint"><span class="hint-icon">&#x1F5B1;</span> Select text to add entity</div>
+      <div class="section-title">Keyboard</div>
+      <div class="hint"><span class="kbd">Tab</span> Next entity</div>
+      <div class="hint"><span class="kbd">⇧Tab</span> Previous entity</div>
+      <div class="hint"><span class="kbd">D</span> Remove focused</div>
+      <div class="hint"><span class="kbd">R</span> Restore focused</div>
+      <div class="hint"><span class="kbd">A</span> Approve</div>
+      <div class="hint"><span class="kbd">Esc</span> Clear focus</div>
+      <div class="section-title" style="margin-top:8px">Mouse</div>
+      <div class="hint"><span class="hint-icon">&#x2715;</span> Click entity to remove</div>
+      <div class="hint"><span class="hint-icon">&#x1F5B1;</span> Select text to add</div>
     </div>
   </div>
 </div>
@@ -306,16 +391,59 @@
   <div class="legend-item"><div class="legend-dot" style="background:var(--org)"></div> Organization</div>
   <div class="legend-item"><div class="legend-dot" style="background:var(--location)"></div> Location</div>
   <div class="legend-item"><div class="legend-dot" style="background:var(--comm)"></div> Contact</div>
-  <div class="legend-item"><div class="legend-dot" style="background:var(--other)"></div> Other</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--financial)"></div> Financial</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--id-doc)"></div> ID / Document</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--medical)"></div> Medical</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--added); border: 1px dashed var(--added)"></div> Added by you</div>
   <div class="spacer"></div>
-  <div class="legend-item" style="color:var(--text-secondary)">Click entity to remove all occurrences &middot; Select text to add</div>
+  <div class="legend-item" style="color:var(--text-secondary)">Click entity to remove &middot; Select text to add</div>
 </div>
 
 <div class="selection-toolbar" id="selection-toolbar">
   <button class="type-btn person" onclick="addEntity('PERSON')">Person</button>
   <button class="type-btn org" onclick="addEntity('ORGANIZATION')">Org</button>
   <button class="type-btn location" onclick="addEntity('LOCATION')">Location</button>
-  <button class="type-btn other" onclick="addEntity('OTHER')">Other</button>
+  <button class="type-btn comm" onclick="addEntity('EMAIL_ADDRESS')">Contact</button>
+  <button class="type-btn financial" onclick="addEntity('CREDIT_CARD')">Financial</button>
+  <button class="type-btn id-doc" onclick="addEntity('US_SSN')">ID</button>
+  <button class="type-btn-more" onclick="event.stopPropagation(); toggleTypeDropdown()" title="More types">&#x22EF;</button>
+  <div class="type-dropdown" id="type-dropdown">
+    <div class="type-dropdown-group">Person</div>
+    <div class="type-dropdown-item" onclick="addEntity('PERSON')"><span class="dot" style="background:var(--person)"></span>Person</div>
+    <div class="type-dropdown-item" onclick="addEntity('NRP')"><span class="dot" style="background:var(--person)"></span>Nationality / Religion / Politics</div>
+    <div class="type-dropdown-group">Contact</div>
+    <div class="type-dropdown-item" onclick="addEntity('EMAIL_ADDRESS')"><span class="dot" style="background:var(--comm)"></span>Email Address</div>
+    <div class="type-dropdown-item" onclick="addEntity('PHONE_NUMBER')"><span class="dot" style="background:var(--comm)"></span>Phone Number</div>
+    <div class="type-dropdown-item" onclick="addEntity('URL')"><span class="dot" style="background:var(--comm)"></span>URL</div>
+    <div class="type-dropdown-item" onclick="addEntity('IP_ADDRESS')"><span class="dot" style="background:var(--comm)"></span>IP Address</div>
+    <div class="type-dropdown-group">Financial</div>
+    <div class="type-dropdown-item" onclick="addEntity('CREDIT_CARD')"><span class="dot" style="background:var(--financial)"></span>Credit Card</div>
+    <div class="type-dropdown-item" onclick="addEntity('IBAN_CODE')"><span class="dot" style="background:var(--financial)"></span>IBAN</div>
+    <div class="type-dropdown-item" onclick="addEntity('CRYPTO')"><span class="dot" style="background:var(--financial)"></span>Crypto Wallet</div>
+    <div class="type-dropdown-group">ID Documents</div>
+    <div class="type-dropdown-item" onclick="addEntity('US_SSN')"><span class="dot" style="background:var(--id-doc)"></span>US SSN</div>
+    <div class="type-dropdown-item" onclick="addEntity('US_PASSPORT')"><span class="dot" style="background:var(--id-doc)"></span>US Passport</div>
+    <div class="type-dropdown-item" onclick="addEntity('US_DRIVER_LICENSE')"><span class="dot" style="background:var(--id-doc)"></span>US Driver License</div>
+    <div class="type-dropdown-item" onclick="addEntity('UK_NHS')"><span class="dot" style="background:var(--id-doc)"></span>UK NHS Number</div>
+    <div class="type-dropdown-item" onclick="addEntity('UK_NIN')"><span class="dot" style="background:var(--id-doc)"></span>UK National Insurance</div>
+    <div class="type-dropdown-item" onclick="addEntity('UK_PASSPORT')"><span class="dot" style="background:var(--id-doc)"></span>UK Passport</div>
+    <div class="type-dropdown-item" onclick="addEntity('UK_CRN')"><span class="dot" style="background:var(--id-doc)"></span>UK Company Reg</div>
+    <div class="type-dropdown-item" onclick="addEntity('UK_DRIVING_LICENCE')"><span class="dot" style="background:var(--id-doc)"></span>UK Driving Licence</div>
+    <div class="type-dropdown-item" onclick="addEntity('EU_VAT')"><span class="dot" style="background:var(--id-doc)"></span>EU VAT Number</div>
+    <div class="type-dropdown-item" onclick="addEntity('EU_PASSPORT')"><span class="dot" style="background:var(--id-doc)"></span>EU Passport</div>
+    <div class="type-dropdown-item" onclick="addEntity('DE_TAX_ID')"><span class="dot" style="background:var(--id-doc)"></span>DE Tax ID</div>
+    <div class="type-dropdown-item" onclick="addEntity('DE_SOCIAL_SECURITY')"><span class="dot" style="background:var(--id-doc)"></span>DE Social Security</div>
+    <div class="type-dropdown-item" onclick="addEntity('FR_NIR')"><span class="dot" style="background:var(--id-doc)"></span>FR NIR (Social Security)</div>
+    <div class="type-dropdown-item" onclick="addEntity('FR_CNI')"><span class="dot" style="background:var(--id-doc)"></span>FR National ID</div>
+    <div class="type-dropdown-item" onclick="addEntity('IT_FISCAL_CODE')"><span class="dot" style="background:var(--id-doc)"></span>IT Fiscal Code</div>
+    <div class="type-dropdown-item" onclick="addEntity('IT_VAT')"><span class="dot" style="background:var(--id-doc)"></span>IT VAT Number</div>
+    <div class="type-dropdown-item" onclick="addEntity('ES_DNI')"><span class="dot" style="background:var(--id-doc)"></span>ES DNI</div>
+    <div class="type-dropdown-item" onclick="addEntity('ES_NIE')"><span class="dot" style="background:var(--id-doc)"></span>ES NIE</div>
+    <div class="type-dropdown-item" onclick="addEntity('CY_TIC')"><span class="dot" style="background:var(--id-doc)"></span>CY Tax ID</div>
+    <div class="type-dropdown-item" onclick="addEntity('CY_ID_CARD')"><span class="dot" style="background:var(--id-doc)"></span>CY ID Card</div>
+    <div class="type-dropdown-group">Medical</div>
+    <div class="type-dropdown-item" onclick="addEntity('MEDICAL_LICENSE')"><span class="dot" style="background:var(--medical)"></span>Medical License</div>
+  </div>
 </div>
 
 <div class="toast" id="toast"><span class="toast-icon"></span><span class="toast-text"></span></div>
@@ -339,6 +467,10 @@ let addedEntities = [];  // [{text, type, start, end}]
 let formatRuns = [];     // [{start, end, bold, italic, underline}]
 let blockMap = [];       // [{start, end, tag}] for paragraph/heading structure
 let collapsedFamilies = new Set();  // family keys that are collapsed in sidebar
+let anonymizedText = '';  // anonymized text from server (for split view)
+let splitView = false;
+let focusedFamilyIdx = -1;  // index into currentFamilies array
+let currentFamilies = [];   // cached families from last render
 
 const API_BASE = '';  // same origin
 
@@ -354,10 +486,14 @@ async function init() {
 
     originalText = data.original_text;
     originalHtml = data.original_html || '';
+    anonymizedText = data.anonymized_text || '';
     entities = data.entities.map((e, i) => ({ ...e, idx: i }));
 
     // Parse formatting from HTML if available
     if (originalHtml) parseHtmlFormatting(originalHtml);
+
+    // Hide split button if no anonymized text available
+    if (!anonymizedText) document.getElementById('split-btn').style.display = 'none';
 
     render();
   } catch (err) {
@@ -408,20 +544,36 @@ function parseHtmlFormatting(html) {
   }
 }
 
+const ENTITY_GROUP = {
+  // Person
+  PERSON: 'PERSON', NRP: 'PERSON',
+  // Organization
+  ORGANIZATION: 'ORG', ORG: 'ORG',
+  // Location
+  LOCATION: 'LOCATION',
+  // Contact / Communication
+  EMAIL_ADDRESS: 'COMM', PHONE_NUMBER: 'COMM', URL: 'COMM', IP_ADDRESS: 'COMM',
+  // Financial
+  CREDIT_CARD: 'FINANCIAL', IBAN_CODE: 'FINANCIAL', CRYPTO: 'FINANCIAL',
+  // ID Documents (US, UK, EU, country-specific)
+  US_SSN: 'ID_DOC', US_PASSPORT: 'ID_DOC', US_DRIVER_LICENSE: 'ID_DOC',
+  UK_NHS: 'ID_DOC', UK_NIN: 'ID_DOC', UK_PASSPORT: 'ID_DOC', UK_CRN: 'ID_DOC', UK_DRIVING_LICENCE: 'ID_DOC',
+  EU_VAT: 'ID_DOC', EU_PASSPORT: 'ID_DOC',
+  DE_TAX_ID: 'ID_DOC', DE_SOCIAL_SECURITY: 'ID_DOC',
+  FR_NIR: 'ID_DOC', FR_CNI: 'ID_DOC',
+  IT_FISCAL_CODE: 'ID_DOC', IT_VAT: 'ID_DOC',
+  ES_DNI: 'ID_DOC', ES_NIE: 'ID_DOC',
+  CY_TIC: 'ID_DOC', CY_ID_CARD: 'ID_DOC',
+  // Medical
+  MEDICAL_LICENSE: 'MEDICAL',
+};
+
 function getEntityClass(type) {
-  if (['PERSON', 'NRP'].includes(type)) return 'entity-PERSON';
-  if (['ORGANIZATION', 'ORG'].includes(type)) return 'entity-ORG';
-  if (type === 'LOCATION') return 'entity-LOCATION';
-  if (['EMAIL_ADDRESS', 'PHONE_NUMBER', 'URL', 'IP_ADDRESS'].includes(type)) return 'entity-EMAIL_ADDRESS';
-  return 'entity-OTHER';
+  return 'entity-' + (ENTITY_GROUP[type] || 'OTHER');
 }
 
 function getTypeClass(type) {
-  if (['PERSON', 'NRP'].includes(type)) return 'type-PERSON';
-  if (['ORGANIZATION', 'ORG'].includes(type)) return 'type-ORG';
-  if (type === 'LOCATION') return 'type-LOCATION';
-  if (['EMAIL_ADDRESS', 'PHONE_NUMBER', 'URL', 'IP_ADDRESS'].includes(type)) return 'type-EMAIL_ADDRESS';
-  return 'type-OTHER';
+  return 'type-' + (ENTITY_GROUP[type] || 'OTHER');
 }
 
 // Create a CSS/attribute-safe group key (no quotes, special chars)
@@ -434,6 +586,7 @@ function render() {
   renderDocument();
   renderSidebar();
   updateStats();
+  if (splitView) renderAnonymizedPanel();
 }
 
 function renderDocument() {
@@ -612,6 +765,7 @@ function renderSidebar() {
   const list = document.getElementById('entity-list');
   const confirmedEntities = entities.filter(e => e.verified);
   const families = buildFamilies(confirmedEntities);
+  currentFamilies = families;  // cache for keyboard navigation
 
   if (families.length === 0 && addedEntities.length === 0) {
     list.innerHTML = '<div style="padding:24px 16px;text-align:center;color:var(--text-secondary);font-size:13px;">No PII entities detected in this document.</div>';
@@ -898,7 +1052,12 @@ function findTextPositionFromRange(range, container, selectedText) {
   return originalText.indexOf(selectedText);
 }
 
+function toggleTypeDropdown() {
+  document.getElementById('type-dropdown').classList.toggle('visible');
+}
+
 function addEntity(type) {
+  document.getElementById('type-dropdown').classList.remove('visible');
   if (!pendingSelection) return;
   const searchText = pendingSelection.text;
   const newLen = searchText.length;
@@ -977,8 +1136,179 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// ============================================================
+// Split View
+// ============================================================
+
+function toggleSplitView() {
+  splitView = !splitView;
+  const main = document.getElementById('main-container');
+  const btn = document.getElementById('split-btn');
+  main.classList.toggle('split-view', splitView);
+  btn.classList.toggle('active', splitView);
+  if (splitView) {
+    renderAnonymizedPanel();
+    setupScrollSync();
+  }
+}
+
+const PH_GROUP = {
+  PERSON: 'PERSON', NRP: 'PERSON',
+  ORGANIZATION: 'ORG', ORG: 'ORG',
+  LOCATION: 'LOCATION',
+  EMAIL_ADDRESS: 'COMM', PHONE_NUMBER: 'COMM', URL: 'COMM', IP_ADDRESS: 'COMM',
+  CREDIT_CARD: 'FINANCIAL', IBAN_CODE: 'FINANCIAL', CRYPTO: 'FINANCIAL',
+  US_SSN: 'ID_DOC', US_PASSPORT: 'ID_DOC', US_DRIVER_LICENSE: 'ID_DOC',
+  UK_NHS: 'ID_DOC', UK_NIN: 'ID_DOC', UK_PASSPORT: 'ID_DOC', UK_CRN: 'ID_DOC', UK_DRIVING_LICENCE: 'ID_DOC',
+  EU_VAT: 'ID_DOC', EU_PASSPORT: 'ID_DOC',
+  DE_TAX_ID: 'ID_DOC', DE_SOCIAL_SECURITY: 'ID_DOC',
+  FR_NIR: 'ID_DOC', FR_CNI: 'ID_DOC',
+  IT_FISCAL_CODE: 'ID_DOC', IT_VAT: 'ID_DOC',
+  ES_DNI: 'ID_DOC', ES_NIE: 'ID_DOC',
+  CY_TIC: 'ID_DOC', CY_ID_CARD: 'ID_DOC',
+  MEDICAL_LICENSE: 'MEDICAL',
+};
+
+function renderAnonymizedPanel() {
+  const container = document.getElementById('doc-content-anon');
+  if (!anonymizedText) { container.textContent = 'Anonymized text not available.'; return; }
+
+  // Parse placeholders like <ORG_1>, <PERSON_2a> and colorize them
+  const paragraphs = anonymizedText.split('\n');
+  let html = '';
+  for (const para of paragraphs) {
+    html += '<p>' + escapeHtml(para).replace(/&lt;(\w+?)&gt;/g, (match, tag) => {
+      // Extract base type from tag like "ORG_1", "PERSON_2a", "D1_ORG_1"
+      const stripped = tag.replace(/^D\d+_/, '');  // remove prefix like D1_
+      const baseType = stripped.replace(/_\d+\w*$/, '');  // ORG, PERSON, etc.
+      const group = PH_GROUP[baseType] || 'OTHER';
+      return `<span class="anon-placeholder ph-${group}">&lt;${tag}&gt;</span>`;
+    }) + '</p>';
+  }
+  container.innerHTML = html;
+}
+
+function setupScrollSync() {
+  const origPane = document.querySelector('.doc-pane-orig');
+  const anonPane = document.querySelector('.doc-pane-anon');
+  if (!origPane || !anonPane) return;
+
+  let syncing = false;
+  function syncScroll(source, target) {
+    if (syncing) return;
+    syncing = true;
+    const pct = source.scrollTop / (source.scrollHeight - source.clientHeight || 1);
+    target.scrollTop = pct * (target.scrollHeight - target.clientHeight || 1);
+    syncing = false;
+  }
+  origPane.addEventListener('scroll', () => syncScroll(origPane, anonPane));
+  anonPane.addEventListener('scroll', () => syncScroll(anonPane, origPane));
+}
+
+// ============================================================
+// Keyboard Shortcuts
+// ============================================================
+
+function focusFamily(idx) {
+  focusedFamilyIdx = idx;
+  // Clear previous focus highlights
+  document.querySelectorAll('.entity.focused').forEach(el => el.classList.remove('focused'));
+  document.querySelectorAll('.entity-item.focused').forEach(el => el.classList.remove('focused'));
+
+  if (idx < 0 || idx >= currentFamilies.length) { focusedFamilyIdx = -1; return; }
+
+  const fam = currentFamilies[idx];
+  const groupKey = makeGroupKey(fam.type, fam.rootText);
+
+  // Highlight sidebar item
+  const sidebarItem = document.querySelector(`.entity-item[data-group-key="${groupKey}"]`);
+  if (sidebarItem) {
+    sidebarItem.classList.add('focused');
+    sidebarItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  // Highlight all document entities in this family
+  document.querySelectorAll(`.entity[data-group-key="${groupKey}"]`).forEach(el => el.classList.add('focused'));
+
+  // Scroll to first occurrence in document
+  const firstIdx = fam.members[0].indices[0];
+  scrollToEntity(firstIdx);
+}
+
+function getFocusedFamily() {
+  if (focusedFamilyIdx < 0 || focusedFamilyIdx >= currentFamilies.length) return null;
+  return currentFamilies[focusedFamilyIdx];
+}
+
+document.addEventListener('keydown', (e) => {
+  // Skip if user is typing in an input or has text selected (for add-entity workflow)
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.target.isContentEditable) return;
+  const sel = window.getSelection();
+  if (sel && sel.toString().trim().length > 0 && e.key !== 'Escape' && e.key !== 'Tab') return;
+
+  const key = e.key;
+
+  // Tab / Shift+Tab — navigate entities
+  if (key === 'Tab') {
+    e.preventDefault();
+    if (currentFamilies.length === 0) return;
+    if (e.shiftKey) {
+      focusFamily(focusedFamilyIdx <= 0 ? currentFamilies.length - 1 : focusedFamilyIdx - 1);
+    } else {
+      focusFamily(focusedFamilyIdx >= currentFamilies.length - 1 ? 0 : focusedFamilyIdx + 1);
+    }
+    return;
+  }
+
+  // D — delete/remove focused entity
+  if (key === 'd' || key === 'D') {
+    const fam = getFocusedFamily();
+    if (!fam) return;
+    const allIndices = fam.members.flatMap(m => m.indices);
+    const allRemoved = allIndices.every(i => removedIndices.has(i));
+    if (!allRemoved) {
+      removeFamilyAll(allIndices);
+      // Re-focus same index after re-render
+      setTimeout(() => focusFamily(focusedFamilyIdx), 50);
+    }
+    return;
+  }
+
+  // R — restore focused entity
+  if (key === 'r' || key === 'R') {
+    const fam = getFocusedFamily();
+    if (!fam) return;
+    const allIndices = fam.members.flatMap(m => m.indices);
+    const anyRemoved = allIndices.some(i => removedIndices.has(i));
+    if (anyRemoved) {
+      restoreFamilyAll(allIndices);
+      setTimeout(() => focusFamily(focusedFamilyIdx), 50);
+    }
+    return;
+  }
+
+  // A — approve
+  if (key === 'a' || key === 'A') {
+    approve();
+    return;
+  }
+
+  // Escape — clear focus, close dropdowns
+  if (key === 'Escape') {
+    focusFamily(-1);
+    document.getElementById('selection-toolbar').classList.remove('visible');
+    document.getElementById('type-dropdown').classList.remove('visible');
+    return;
+  }
+});
+
 // Close selection toolbar on click outside (but not right after showing it)
 document.addEventListener('mousedown', (e) => {
+  // Close type dropdown on outside click
+  if (!e.target.closest('.type-dropdown') && !e.target.closest('.type-btn-more')) {
+    document.getElementById('type-dropdown').classList.remove('visible');
+  }
   if (!e.target.closest('.selection-toolbar')) {
     setTimeout(() => {
       // Don't hide if toolbar was just shown (e.g. during double-click)

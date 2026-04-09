@@ -1,0 +1,1510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PII Shield Review</title>
+<style>
+  :root {
+    --bg: #fafafa; --surface: #ffffff; --text: #1a1a2e; --text-secondary: #6b7280;
+    --border: #e5e7eb; --accent: #10b981; --accent-hover: #059669;
+    --person: #3b82f6; --person-bg: #dbeafe;
+    --org: #8b5cf6; --org-bg: #ede9fe;
+    --location: #10b981; --location-bg: #d1fae5;
+    --comm: #f59e0b; --comm-bg: #fef3c7;
+    --financial: #ef4444; --financial-bg: #fee2e2;
+    --id-doc: #ec4899; --id-doc-bg: #fce7f3;
+    --medical: #14b8a6; --medical-bg: #ccfbf1;
+    --other: #6b7280; --other-bg: #f3f4f6;
+    --danger: #ef4444; --danger-bg: #fee2e2;
+    --added: #0ea5e9; --added-bg: #e0f2fe;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f172a; --surface: #1e293b; --text: #e2e8f0; --text-secondary: #94a3b8;
+      --border: #334155;
+      --person-bg: #1e3a5f; --org-bg: #2d1b69; --location-bg: #064e3b;
+      --comm-bg: #78350f; --financial-bg: #7f1d1d; --id-doc-bg: #831843;
+      --medical-bg: #134e4a; --other-bg: #374151; --danger-bg: #7f1d1d;
+      --added-bg: #0c4a6e;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.6;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+
+  /* Top Bar */
+  .topbar {
+    display: flex; align-items: center; gap: 16px; padding: 12px 24px;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .topbar h1 { font-size: 16px; font-weight: 600; flex-shrink: 0; }
+  .topbar .shield-icon { font-size: 20px; }
+  .stats { display: flex; gap: 12px; margin-left: 16px; }
+  .stat {
+    display: flex; align-items: center; gap: 4px; font-size: 13px;
+    color: var(--text-secondary); padding: 4px 10px; border-radius: 6px;
+    background: var(--bg);
+  }
+  .stat .count { font-weight: 600; color: var(--text); }
+  .spacer { flex: 1; }
+  .btn {
+    padding: 8px 20px; border-radius: 8px; border: none; cursor: pointer;
+    font-size: 14px; font-weight: 600; transition: all 0.15s;
+  }
+  .btn-approve {
+    background: var(--accent); color: white;
+  }
+  .btn-approve:hover { background: var(--accent-hover); transform: translateY(-1px); }
+  .btn-approve:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+  .btn-reset {
+    background: transparent; color: var(--text-secondary); border: 1px solid var(--border);
+  }
+  .btn-reset:hover { background: var(--bg); }
+
+  /* Main Layout */
+  .main { display: flex; flex: 1; overflow: hidden; }
+
+  /* Document Panel */
+  .doc-panel {
+    flex: 1; overflow-y: auto; padding: 32px 48px;
+  }
+  .doc-content {
+    max-width: 720px; margin: 0 auto; font-size: 15px; line-height: 1.8;
+    white-space: pre-wrap; word-wrap: break-word;
+  }
+
+  /* Entity Highlights */
+  .entity {
+    padding: 1px 4px; border-radius: 4px; cursor: pointer;
+    transition: all 0.15s; position: relative; border-bottom: 2px solid;
+  }
+  .entity:hover { filter: brightness(0.9); }
+  .entity.removed {
+    text-decoration: line-through; opacity: 0.4;
+    border-bottom-style: dashed;
+  }
+  .entity-PERSON { background: var(--person-bg); border-color: var(--person); color: var(--person); }
+  .entity-ORG { background: var(--org-bg); border-color: var(--org); color: var(--org); }
+  .entity-LOCATION { background: var(--location-bg); border-color: var(--location); color: var(--location); }
+  .entity-COMM { background: var(--comm-bg); border-color: var(--comm); color: var(--comm); }
+  .entity-FINANCIAL { background: var(--financial-bg); border-color: var(--financial); color: var(--financial); }
+  .entity-ID_DOC { background: var(--id-doc-bg); border-color: var(--id-doc); color: var(--id-doc); }
+  .entity-MEDICAL { background: var(--medical-bg); border-color: var(--medical); color: var(--medical); }
+  .entity-OTHER { background: var(--other-bg); border-color: var(--other); color: var(--other); }
+  .entity-added { border-style: dashed; background: var(--added-bg) !important; border-color: var(--added) !important; color: var(--added) !important; }
+
+  /* Entity Tooltip — minimal type label on hover */
+  .entity-tooltip {
+    display: none; position: absolute; bottom: calc(100% + 4px); left: 50%;
+    transform: translateX(-50%); background: var(--surface); border: 1px solid var(--border);
+    border-radius: 5px; padding: 3px 8px; white-space: nowrap; z-index: 50;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12); font-size: 10px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+    pointer-events: none;
+  }
+  .entity:hover .entity-tooltip { display: block; }
+
+  /* Sidebar */
+  .sidebar {
+    width: 320px; border-left: 1px solid var(--border); background: var(--surface);
+    overflow-y: auto; flex-shrink: 0;
+  }
+  .sidebar-header {
+    padding: 16px; border-bottom: 1px solid var(--border);
+    font-size: 13px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.5px; color: var(--text-secondary);
+  }
+  .entity-list { padding: 8px; }
+  .entity-item {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    border-radius: 6px; cursor: pointer; transition: background 0.1s;
+    font-size: 13px;
+  }
+  .entity-item:hover { background: var(--bg); }
+  .entity-item.removed { opacity: 0.4; text-decoration: line-through; }
+  .entity-item .idx { color: var(--text-secondary); font-size: 11px; width: 20px; }
+  .entity-item .type-badge {
+    font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 0.3px; flex-shrink: 0;
+  }
+  .type-PERSON .type-badge { background: var(--person-bg); color: var(--person); }
+  .type-ORG .type-badge { background: var(--org-bg); color: var(--org); }
+  .type-LOCATION .type-badge { background: var(--location-bg); color: var(--location); }
+  .type-COMM .type-badge { background: var(--comm-bg); color: var(--comm); }
+  .type-FINANCIAL .type-badge { background: var(--financial-bg); color: var(--financial); }
+  .type-ID_DOC .type-badge { background: var(--id-doc-bg); color: var(--id-doc); }
+  .type-MEDICAL .type-badge { background: var(--medical-bg); color: var(--medical); }
+  .type-OTHER .type-badge { background: var(--other-bg); color: var(--other); }
+  .entity-item .text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .entity-item .score { color: var(--text-secondary); font-size: 11px; }
+
+  /* Selection Toolbar */
+  .selection-toolbar {
+    display: none; position: fixed; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+    z-index: 200; gap: 4px; flex-wrap: wrap;
+  }
+  .selection-toolbar.visible { display: flex; }
+  .selection-toolbar .type-btn {
+    padding: 6px 12px; border-radius: 6px; border: none; cursor: pointer;
+    font-size: 12px; font-weight: 500; transition: all 0.1s;
+    background: var(--bg); color: var(--text);
+  }
+  .selection-toolbar .type-btn:hover { filter: brightness(0.9); transform: translateY(-1px); }
+  .selection-toolbar .type-btn.person { background: var(--person-bg); color: var(--person); }
+  .selection-toolbar .type-btn.org { background: var(--org-bg); color: var(--org); }
+  .selection-toolbar .type-btn.location { background: var(--location-bg); color: var(--location); }
+  .selection-toolbar .type-btn.comm { background: var(--comm-bg); color: var(--comm); }
+  .selection-toolbar .type-btn.financial { background: var(--financial-bg); color: var(--financial); }
+  .selection-toolbar .type-btn.id-doc { background: var(--id-doc-bg); color: var(--id-doc); }
+  .selection-toolbar .type-btn.medical { background: var(--medical-bg); color: var(--medical); }
+  .selection-toolbar .type-btn.other { background: var(--other-bg); color: var(--other); }
+  .selection-toolbar .type-btn-more {
+    padding: 6px 8px; border-radius: 6px; border: none; cursor: pointer;
+    font-size: 14px; font-weight: 600; background: var(--bg); color: var(--text-secondary);
+    transition: all 0.1s; line-height: 1;
+  }
+  .selection-toolbar .type-btn-more:hover { background: var(--border); }
+  .type-dropdown {
+    display: none; position: absolute; bottom: calc(100% + 4px); right: 0;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); z-index: 210;
+    max-height: 280px; overflow-y: auto; min-width: 200px;
+  }
+  .type-dropdown.visible { display: block; }
+  .type-dropdown-group { padding: 4px 8px; font-size: 10px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.5px; color: var(--text-secondary); margin-top: 4px; }
+  .type-dropdown-group:first-child { margin-top: 0; }
+  .type-dropdown-item {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 5px;
+    cursor: pointer; font-size: 12px; transition: background 0.1s;
+  }
+  .type-dropdown-item:hover { background: var(--bg); }
+  .type-dropdown-item .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  /* Approved Overlay */
+  .approved-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    z-index: 300; align-items: center; justify-content: center;
+  }
+  .approved-overlay.visible { display: flex; }
+  .approved-card {
+    background: var(--surface); border-radius: 16px; padding: 48px 64px;
+    text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  }
+  .approved-card .checkmark { font-size: 64px; margin-bottom: 16px; }
+  .approved-card h2 { font-size: 24px; margin-bottom: 8px; }
+  .approved-card p { color: var(--text-secondary); font-size: 14px; }
+
+  /* Legend */
+  .legend {
+    display: flex; gap: 16px; padding: 8px 24px; background: var(--surface);
+    border-top: 1px solid var(--border); font-size: 12px; color: var(--text-secondary);
+    flex-wrap: wrap;
+  }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 3px; }
+
+  /* Group hover — highlight all matching entities */
+  .entity.group-hover { outline: 2px solid currentColor; outline-offset: 1px; }
+  .entity-item.group-hover { background: var(--bg); }
+
+  /* Toast notification */
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 20px; box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+    font-size: 13px; color: var(--text); z-index: 400;
+    opacity: 0; transition: opacity 0.2s, transform 0.2s; pointer-events: none;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast .toast-icon { font-size: 16px; }
+
+  /* Sidebar group count badge */
+  .group-count {
+    font-size: 11px; color: var(--text-secondary); background: var(--bg);
+    padding: 1px 6px; border-radius: 4px; flex-shrink: 0; font-weight: 500;
+  }
+
+  /* Sidebar family variants (indented sub-items) */
+  .entity-item.variant {
+    padding-left: 32px; font-size: 12px; opacity: 0.85;
+  }
+  .entity-item .family-toggle {
+    font-size: 10px; width: 16px; text-align: center; cursor: pointer;
+    color: var(--text-secondary); flex-shrink: 0; user-select: none;
+    transition: transform 0.15s;
+  }
+  .entity-item .family-toggle.collapsed { transform: rotate(-90deg); }
+
+  /* HTML-mode document (docx formatting) */
+  .doc-content.html-mode { white-space: normal; }
+  .doc-content.html-mode p { margin-bottom: 0.6em; }
+  .doc-content.html-mode h1 { font-size: 1.5em; font-weight: 700; margin: 0.8em 0 0.4em; }
+  .doc-content.html-mode h2 { font-size: 1.3em; font-weight: 600; margin: 0.7em 0 0.3em; }
+  .doc-content.html-mode h3 { font-size: 1.15em; font-weight: 600; margin: 0.6em 0 0.3em; }
+  .doc-content.html-mode h4 { font-size: 1.05em; font-weight: 600; margin: 0.5em 0 0.2em; }
+  .doc-content.html-mode b, .doc-content.html-mode strong { font-weight: 700; }
+  .doc-content.html-mode i, .doc-content.html-mode em { font-style: italic; }
+  .doc-content.html-mode u { text-decoration: underline; }
+
+  /* Instruction bar */
+  .instruction-bar {
+    display: flex; align-items: center; gap: 8px; padding: 8px 24px;
+    background: var(--bg); border-bottom: 1px solid var(--border);
+    font-size: 12px; color: var(--text-secondary); line-height: 1.5;
+  }
+  .instruction-bar .instruction-icon { font-size: 16px; flex-shrink: 0; }
+  .instruction-bar strong { color: var(--text); }
+
+  /* Sidebar action buttons (remove/restore) */
+  .entity-item .action-btn {
+    width: 22px; height: 22px; border-radius: 4px; border: 1px solid transparent;
+    background: transparent; cursor: pointer; font-size: 12px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0; transition: opacity 0.15s, background 0.1s;
+    margin-left: auto;
+  }
+  .entity-item:hover .action-btn { opacity: 1; }
+  .entity-item .action-btn.remove-btn { color: var(--danger); }
+  .entity-item .action-btn.remove-btn:hover { background: var(--danger-bg); border-color: var(--danger); }
+  .entity-item .action-btn.restore-btn { color: var(--accent); }
+  .entity-item .action-btn.restore-btn:hover { background: var(--location-bg); border-color: var(--accent); }
+  .entity-item.removed .action-btn.restore-btn { opacity: 0.8; }
+
+  /* How it works section in sidebar */
+  .how-it-works {
+    padding: 12px 16px; border-top: 1px solid var(--border);
+    margin-top: auto; font-size: 11px; color: var(--text-secondary); line-height: 1.8;
+  }
+  .how-it-works .section-title {
+    text-align: center; font-size: 10px; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--text-secondary); margin-bottom: 6px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .how-it-works .section-title::before,
+  .how-it-works .section-title::after {
+    content: ''; flex: 1; height: 1px; background: var(--border);
+  }
+  .how-it-works .hint { display: flex; align-items: center; gap: 6px; }
+  .how-it-works .hint-icon { width: 16px; text-align: center; flex-shrink: 0; }
+
+  /* Keyboard focus */
+  .entity.focused { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+  .entity-item.focused { background: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); outline: 2px solid var(--accent); outline-offset: -2px; }
+  .kbd { display: inline-block; font-size: 10px; font-family: monospace; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 3px; padding: 0px 4px; margin-right: 2px;
+    font-weight: 600; line-height: 1.6; min-width: 16px; text-align: center; }
+
+  /* Split view */
+  .btn-split { padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border);
+    cursor: pointer; font-size: 12px; font-weight: 500; background: var(--bg); color: var(--text-secondary);
+    transition: all 0.15s; }
+  .btn-split:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-split.active { background: var(--accent); color: white; border-color: var(--accent); }
+  .doc-panel { position: relative; }
+  .main.split-view .doc-panel { display: flex; gap: 0; padding: 0; }
+  .doc-pane { flex: 1; overflow-y: auto; padding: 32px 24px; }
+  .doc-pane .doc-content { max-width: none; }
+  .doc-pane-anon { border-left: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 60%, var(--surface)); }
+  .doc-pane-label { position: sticky; top: 0; z-index: 10; padding: 8px 24px; font-size: 11px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary);
+    background: var(--surface); border-bottom: 1px solid var(--border); }
+  .main:not(.split-view) .doc-pane-orig { display: contents; }
+  .main:not(.split-view) .doc-pane-orig .doc-pane-label { display: none; }
+  .main:not(.split-view) .doc-pane-anon { display: none; }
+  /* Anonymized text placeholder highlights */
+  .anon-placeholder { padding: 1px 4px; border-radius: 3px; font-weight: 500; font-size: 0.9em; }
+  .anon-placeholder.ph-PERSON { background: var(--person-bg); color: var(--person); }
+  .anon-placeholder.ph-ORG { background: var(--org-bg); color: var(--org); }
+  .anon-placeholder.ph-LOCATION { background: var(--location-bg); color: var(--location); }
+  .anon-placeholder.ph-COMM { background: var(--comm-bg); color: var(--comm); }
+  .anon-placeholder.ph-FINANCIAL { background: var(--financial-bg); color: var(--financial); }
+  .anon-placeholder.ph-ID_DOC { background: var(--id-doc-bg); color: var(--id-doc); }
+  .anon-placeholder.ph-MEDICAL { background: var(--medical-bg); color: var(--medical); }
+  .anon-placeholder.ph-OTHER { background: var(--other-bg); color: var(--other); }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="shield-icon">&#x1f6e1;</span>
+  <h1>PII Shield Review</h1>
+  <div class="stats">
+    <div class="stat"><span class="count" id="entity-count">0</span>&nbsp;entities</div>
+    <div class="stat"><span class="count" id="removed-count">0</span>&nbsp;removed</div>
+    <div class="stat"><span class="count" id="added-count">0</span>&nbsp;added</div>
+  </div>
+  <div class="spacer"></div>
+  <button class="btn-split" id="split-btn" onclick="toggleSplitView()" title="Toggle side-by-side view (original vs anonymized)">Split View</button>
+  <button class="btn btn-reset" onclick="resetAll()">Reset</button>
+  <button class="btn btn-approve" id="approve-btn" onclick="approve()">Approve</button>
+</div>
+
+<div class="instruction-bar">
+  <span class="instruction-icon">&#x1f4cb;</span>
+  <span>Review detected PII entities below. <strong>Click</strong> a highlighted entity to remove it (all matching occurrences removed). <strong>Select text</strong> to add missed entities. Click <strong>Approve</strong> when done.</span>
+</div>
+
+<div class="main" id="main-container">
+  <div class="doc-panel">
+    <div class="doc-pane doc-pane-orig">
+      <div class="doc-pane-label">Original (with entities)</div>
+      <div class="doc-content" id="doc-content"></div>
+    </div>
+    <div class="doc-pane doc-pane-anon">
+      <div class="doc-pane-label">Anonymized</div>
+      <div class="doc-content" id="doc-content-anon"></div>
+    </div>
+  </div>
+  <div class="sidebar" style="display:flex;flex-direction:column;">
+    <div class="sidebar-header">Detected Entities</div>
+    <div class="entity-list" id="entity-list" style="flex:1;overflow-y:auto;"></div>
+    <div class="how-it-works">
+      <div class="section-title">Keyboard</div>
+      <div class="hint"><span class="kbd">Tab</span> Next entity</div>
+      <div class="hint"><span class="kbd">⇧Tab</span> Previous entity</div>
+      <div class="hint"><span class="kbd">D</span> Remove focused</div>
+      <div class="hint"><span class="kbd">R</span> Restore focused</div>
+      <div class="hint"><span class="kbd">A</span> Approve</div>
+      <div class="hint"><span class="kbd">Esc</span> Clear focus</div>
+      <div class="section-title" style="margin-top:8px">Mouse</div>
+      <div class="hint"><span class="hint-icon">&#x2715;</span> Click entity to remove</div>
+      <div class="hint"><span class="hint-icon">&#x1F5B1;</span> Select text to add</div>
+    </div>
+  </div>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--person)"></div> Person</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--org)"></div> Organization</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--location)"></div> Location</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--comm)"></div> Contact</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--financial)"></div> Financial</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--id-doc)"></div> ID / Document</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--medical)"></div> Medical</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--added); border: 1px dashed var(--added)"></div> Added by you</div>
+  <div class="spacer"></div>
+  <div class="legend-item" style="color:var(--text-secondary)">Click entity to remove &middot; Select text to add</div>
+</div>
+
+<div class="selection-toolbar" id="selection-toolbar">
+  <button class="type-btn person" onclick="addEntity('PERSON')">Person</button>
+  <button class="type-btn org" onclick="addEntity('ORGANIZATION')">Org</button>
+  <button class="type-btn location" onclick="addEntity('LOCATION')">Location</button>
+  <button class="type-btn comm" onclick="addEntity('EMAIL_ADDRESS')">Contact</button>
+  <button class="type-btn financial" onclick="addEntity('CREDIT_CARD')">Financial</button>
+  <button class="type-btn id-doc" onclick="addEntity('US_SSN')">ID</button>
+  <button class="type-btn-more" onclick="event.stopPropagation(); toggleTypeDropdown()" title="More types">&#x22EF;</button>
+  <div class="type-dropdown" id="type-dropdown">
+    <div class="type-dropdown-group">Person</div>
+    <div class="type-dropdown-item" onclick="addEntity('PERSON')"><span class="dot" style="background:var(--person)"></span>Person</div>
+    <div class="type-dropdown-item" onclick="addEntity('NRP')"><span class="dot" style="background:var(--person)"></span>Nationality / Religion / Politics</div>
+    <div class="type-dropdown-group">Contact</div>
+    <div class="type-dropdown-item" onclick="addEntity('EMAIL_ADDRESS')"><span class="dot" style="background:var(--comm)"></span>Email Address</div>
+    <div class="type-dropdown-item" onclick="addEntity('PHONE_NUMBER')"><span class="dot" style="background:var(--comm)"></span>Phone Number</div>
+    <div class="type-dropdown-item" onclick="addEntity('URL')"><span class="dot" style="background:var(--comm)"></span>URL</div>
+    <div class="type-dropdown-item" onclick="addEntity('IP_ADDRESS')"><span class="dot" style="background:var(--comm)"></span>IP Address</div>
+    <div class="type-dropdown-group">Financial</div>
+    <div class="type-dropdown-item" onclick="addEntity('CREDIT_CARD')"><span class="dot" style="background:var(--financial)"></span>Credit Card</div>
+    <div class="type-dropdown-item" onclick="addEntity('IBAN_CODE')"><span class="dot" style="background:var(--financial)"></span>IBAN</div>
+    <div class="type-dropdown-item" onclick="addEntity('CRYPTO')"><span class="dot" style="background:var(--financial)"></span>Crypto Wallet</div>
+    <div class="type-dropdown-group">ID Documents</div>
+    <div class="type-dropdown-item" onclick="addEntity('US_SSN')"><span class="dot" style="background:var(--id-doc)"></span>US SSN</div>
+    <div class="type-dropdown-item" onclick="addEntity('US_PASSPORT')"><span class="dot" style="background:var(--id-doc)"></span>US Passport</div>
+    <div class="type-dropdown-item" onclick="addEntity('US_DRIVER_LICENSE')"><span class="dot" style="background:var(--id-doc)"></span>US Driver License</div>
+    <div class="type-dropdown-item" onclick="addEntity('UK_NHS')"><span class="dot" style="background:var(--id-doc)"></span>UK NHS Number</div>
+    <div class="type-dropdown-item" onclick="addEntity('UK_NIN')"><span class="dot" style="background:var(--id-doc)"></span>UK National Insurance</div>
+    <div class="type-dropdown-item" onclick="addEntity('UK_PASSPORT')"><span class="dot" style="background:var(--id-doc)"></span>UK Passport</div>
+    <div class="type-dropdown-item" onclick="addEntity('UK_CRN')"><span class="dot" style="background:var(--id-doc)"></span>UK Company Reg</div>
+    <div class="type-dropdown-item" onclick="addEntity('UK_DRIVING_LICENCE')"><span class="dot" style="background:var(--id-doc)"></span>UK Driving Licence</div>
+    <div class="type-dropdown-item" onclick="addEntity('EU_VAT')"><span class="dot" style="background:var(--id-doc)"></span>EU VAT Number</div>
+    <div class="type-dropdown-item" onclick="addEntity('EU_PASSPORT')"><span class="dot" style="background:var(--id-doc)"></span>EU Passport</div>
+    <div class="type-dropdown-item" onclick="addEntity('DE_TAX_ID')"><span class="dot" style="background:var(--id-doc)"></span>DE Tax ID</div>
+    <div class="type-dropdown-item" onclick="addEntity('DE_SOCIAL_SECURITY')"><span class="dot" style="background:var(--id-doc)"></span>DE Social Security</div>
+    <div class="type-dropdown-item" onclick="addEntity('FR_NIR')"><span class="dot" style="background:var(--id-doc)"></span>FR NIR (Social Security)</div>
+    <div class="type-dropdown-item" onclick="addEntity('FR_CNI')"><span class="dot" style="background:var(--id-doc)"></span>FR National ID</div>
+    <div class="type-dropdown-item" onclick="addEntity('IT_FISCAL_CODE')"><span class="dot" style="background:var(--id-doc)"></span>IT Fiscal Code</div>
+    <div class="type-dropdown-item" onclick="addEntity('IT_VAT')"><span class="dot" style="background:var(--id-doc)"></span>IT VAT Number</div>
+    <div class="type-dropdown-item" onclick="addEntity('ES_DNI')"><span class="dot" style="background:var(--id-doc)"></span>ES DNI</div>
+    <div class="type-dropdown-item" onclick="addEntity('ES_NIE')"><span class="dot" style="background:var(--id-doc)"></span>ES NIE</div>
+    <div class="type-dropdown-item" onclick="addEntity('CY_TIC')"><span class="dot" style="background:var(--id-doc)"></span>CY Tax ID</div>
+    <div class="type-dropdown-item" onclick="addEntity('CY_ID_CARD')"><span class="dot" style="background:var(--id-doc)"></span>CY ID Card</div>
+    <div class="type-dropdown-group">Medical</div>
+    <div class="type-dropdown-item" onclick="addEntity('MEDICAL_LICENSE')"><span class="dot" style="background:var(--medical)"></span>Medical License</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"><span class="toast-icon"></span><span class="toast-text"></span></div>
+
+<div class="approved-overlay" id="approved-overlay">
+  <div class="approved-card" id="approved-card">
+    <div class="checkmark">&#x2705;</div>
+    <h2>Review Approved</h2>
+    <p id="approved-msg" style="margin-top:12px;">
+      Decisions file: <code id="approved-filename" style="font-family:monospace; font-size:12px;"></code>
+    </p>
+    <p id="approved-saved-hint" style="margin-top:14px; font-size:13px; color:var(--text-secondary);">
+      Saved. You can close this tab and tell Claude "continue".
+    </p>
+  </div>
+</div>
+
+<script>
+// Session data — injected by server
+let SESSION_ID = '';
+let originalText = '';
+let originalHtml = '';   // HTML from docx (preserves bold/italic/underline/headings)
+let entities = [];       // [{type, text, start, end, score, verified, idx}]
+let removedIndices = new Set();
+let addedEntities = [];  // [{text, type, start, end}]
+let formatRuns = [];     // [{start, end, bold, italic, underline}]
+let blockMap = [];       // [{start, end, tag}] for paragraph/heading structure
+let collapsedFamilies = new Set();  // family keys that are collapsed in sidebar
+let anonymizedText = '';  // anonymized text from server (for split view)
+let splitView = false;
+let focusedFamilyIdx = -1;  // index into currentFamilies array
+let currentFamilies = [];   // cached families from last render
+
+const API_BASE = '';  // same origin
+
+async function init() {
+  // Standalone mode: data is embedded in the HTML by generateReviewHtml()
+  if (window.STANDALONE_MODE && window.REVIEW_DATA) {
+    const data = window.REVIEW_DATA;
+    SESSION_ID = data.session_id || 'standalone';
+    originalText = data.original_text || '';
+    originalHtml = data.original_html || '';
+    anonymizedText = data.anonymized_text || '';
+    entities = (data.entities || []).map((e, i) => ({ ...e, idx: i, verified: true }));
+    if (originalHtml) parseHtmlFormatting(originalHtml);
+    if (!anonymizedText) document.getElementById('split-btn').style.display = 'none';
+    render();
+    return;
+  }
+
+  // Server mode: fetch from API
+  const parts = window.location.pathname.split('/review/');
+  SESSION_ID = parts[1] || '';
+  if (!SESSION_ID) { document.getElementById('doc-content').textContent = 'No session ID'; return; }
+
+  try {
+    const resp = await fetch(`${API_BASE}/api/review/${SESSION_ID}`);
+    const data = await resp.json();
+    if (data.error) { document.getElementById('doc-content').textContent = data.error; return; }
+
+    originalText = data.original_text;
+    originalHtml = data.original_html || '';
+    anonymizedText = data.anonymized_text || '';
+    entities = data.entities.map((e, i) => ({ ...e, idx: i }));
+
+    // Parse formatting from HTML if available
+    if (originalHtml) parseHtmlFormatting(originalHtml);
+
+    // Hide split button if no anonymized text available
+    if (!anonymizedText) document.getElementById('split-btn').style.display = 'none';
+
+    render();
+  } catch (err) {
+    document.getElementById('doc-content').textContent = 'Failed to load review data: ' + err.message;
+  }
+}
+
+// Parse docx HTML to extract formatting runs + block structure mapped to originalText positions
+function parseHtmlFormatting(html) {
+  const temp = document.createElement('div');
+  temp.innerHTML = html;
+  formatRuns = [];
+  blockMap = [];
+  let charPos = 0;
+
+  for (const block of temp.children) {
+    const tag = block.tagName.toLowerCase();
+    const blockStart = charPos;
+
+    function walkNode(node, inherited) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.textContent;
+        if (text.length > 0) {
+          if (inherited.bold || inherited.italic || inherited.underline) {
+            formatRuns.push({ start: charPos, end: charPos + text.length, ...inherited });
+          }
+          charPos += text.length;
+        }
+        return;
+      }
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const t = node.tagName.toLowerCase();
+        if (t === 'br') {
+          charPos++; // matches \n in original_text
+          return;
+        }
+        const next = { ...inherited };
+        if (t === 'b' || t === 'strong') next.bold = true;
+        if (t === 'i' || t === 'em') next.italic = true;
+        if (t === 'u') next.underline = true;
+        for (const child of node.childNodes) walkNode(child, next);
+      }
+    }
+
+    walkNode(block, { bold: false, italic: false, underline: false });
+    blockMap.push({ start: blockStart, end: charPos, tag });
+    charPos++; // \n between paragraphs
+  }
+}
+
+const ENTITY_GROUP = {
+  // Person
+  PERSON: 'PERSON', NRP: 'PERSON',
+  // Organization
+  ORGANIZATION: 'ORG', ORG: 'ORG',
+  // Location
+  LOCATION: 'LOCATION',
+  // Contact / Communication
+  EMAIL_ADDRESS: 'COMM', PHONE_NUMBER: 'COMM', URL: 'COMM', IP_ADDRESS: 'COMM',
+  // Financial
+  CREDIT_CARD: 'FINANCIAL', IBAN_CODE: 'FINANCIAL', CRYPTO: 'FINANCIAL',
+  // ID Documents (US, UK, EU, country-specific)
+  US_SSN: 'ID_DOC', US_PASSPORT: 'ID_DOC', US_DRIVER_LICENSE: 'ID_DOC',
+  UK_NHS: 'ID_DOC', UK_NIN: 'ID_DOC', UK_PASSPORT: 'ID_DOC', UK_CRN: 'ID_DOC', UK_DRIVING_LICENCE: 'ID_DOC',
+  EU_VAT: 'ID_DOC', EU_PASSPORT: 'ID_DOC',
+  DE_TAX_ID: 'ID_DOC', DE_SOCIAL_SECURITY: 'ID_DOC',
+  FR_NIR: 'ID_DOC', FR_CNI: 'ID_DOC',
+  IT_FISCAL_CODE: 'ID_DOC', IT_VAT: 'ID_DOC',
+  ES_DNI: 'ID_DOC', ES_NIE: 'ID_DOC',
+  CY_TIC: 'ID_DOC', CY_ID_CARD: 'ID_DOC',
+  // Medical
+  MEDICAL_LICENSE: 'MEDICAL',
+};
+
+function getEntityClass(type) {
+  return 'entity-' + (ENTITY_GROUP[type] || 'OTHER');
+}
+
+function getTypeClass(type) {
+  return 'type-' + (ENTITY_GROUP[type] || 'OTHER');
+}
+
+// Create a CSS/attribute-safe group key (no quotes, special chars)
+function makeGroupKey(type, text) {
+  const norm = (text || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
+  return `${type}__${norm}`;
+}
+
+function render() {
+  renderDocument();
+  renderSidebar();
+  updateStats();
+  if (splitView) renderAnonymizedPanel();
+}
+
+function renderDocument() {
+  const container = document.getElementById('doc-content');
+  const hasHtml = formatRuns.length > 0 || blockMap.length > 0;
+  container.classList.toggle('html-mode', hasHtml);
+
+  // Merge original + added entities, sort by start position
+  const allEntities = [
+    ...entities.filter(e => e.verified).map(e => ({ ...e, source: 'original' })),
+    ...addedEntities.map((e, i) => ({ ...e, idx: `added_${i}`, source: 'added', score: 1.0 }))
+  ].sort((a, b) => a.start - b.start);
+
+  // Build a flat list of "segments" with formatting + entity info
+  // Each segment: {start, end, entity: null|obj, bold, italic, underline}
+  const segments = buildSegments(allEntities);
+
+  // Always split originalText by \n for paragraph boundaries — guaranteed to
+  // match entity positions.  Use blockMap only for tag names (p/h1/h2/...).
+  const paragraphs = originalText.split('\n');
+  let html = '';
+  let offset = 0;
+  for (let pi = 0; pi < paragraphs.length; pi++) {
+    const para = paragraphs[pi];
+    const start = offset;
+    const end = offset + para.length;
+    const tag = (hasHtml && blockMap[pi] && blockMap[pi].tag) || 'p';
+    html += `<${tag}>`;
+    html += renderSegmentsRange(segments, start, end);
+    html += `</${tag}>`;
+    offset = end + 1; // +1 for the \n separator
+  }
+  container.innerHTML = html;
+}
+
+function buildSegments(allEntities) {
+  // Create breakpoints from entity boundaries + format run boundaries
+  const points = new Set([0, originalText.length]);
+  for (const e of allEntities) {
+    if (e.start >= 0) { points.add(e.start); points.add(e.end); }
+  }
+  for (const f of formatRuns) { points.add(f.start); points.add(f.end); }
+  const sorted = Array.from(points).sort((a, b) => a - b);
+
+  const segments = [];
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const start = sorted[i], end = sorted[i + 1];
+    if (start >= end) continue;
+    // Find entity covering this segment
+    const entity = allEntities.find(e => e.start <= start && end <= e.end);
+    // Find formatting
+    const fmt = formatRuns.find(f => f.start <= start && end <= f.end) || {};
+    segments.push({ start, end, entity, bold: !!fmt.bold, italic: !!fmt.italic, underline: !!fmt.underline });
+  }
+  return segments;
+}
+
+function renderSegmentsRange(segments, rangeStart, rangeEnd) {
+  let html = '';
+  let currentEntity = null;
+  for (const seg of segments) {
+    if (seg.end <= rangeStart || seg.start >= rangeEnd) continue;
+    const s = Math.max(seg.start, rangeStart);
+    const e = Math.min(seg.end, rangeEnd);
+    const text = escapeHtml(originalText.slice(s, e));
+
+    // Apply formatting tags
+    let formatted = text;
+    if (seg.bold) formatted = `<b>${formatted}</b>`;
+    if (seg.italic) formatted = `<i>${formatted}</i>`;
+    if (seg.underline) formatted = `<u>${formatted}</u>`;
+
+    if (seg.entity) {
+      // Open entity span at entity start
+      if (currentEntity !== seg.entity) {
+        if (currentEntity) html += currentEntity._tooltipHtml + `</span>`;  // close previous
+        const ent = seg.entity;
+        const isRemoved = ent.source === 'original' && removedIndices.has(ent.idx);
+        const isAdded = ent.source === 'added';
+        const cls = `entity ${getEntityClass(ent.type)} ${isRemoved ? 'removed' : ''} ${isAdded ? 'entity-added' : ''}`;
+        const groupKey = makeGroupKey(ent.type, ent.text);
+        const dataIdx = ent.idx;
+
+        const groupCount = ent.source === 'original'
+          ? entities.filter(x => x.verified && makeGroupKey(x.type, x.text) === groupKey).length
+          : 1;
+        const allLabel = groupCount > 1 ? ` all ${groupCount}` : '';
+
+        html += `<span class="${cls}" data-idx="${dataIdx}" data-source="${ent.source}" data-group-key="${groupKey}" onclick="toggleEntity(this)" onmouseenter="highlightGroup('${groupKey}')" onmouseleave="unhighlightGroup('${groupKey}')">`;
+        // We'll close with tooltip at entity end
+        currentEntity = seg.entity;
+        // Store tooltip info for closing
+        currentEntity._tooltipHtml = buildTooltipHtml(ent, isRemoved, isAdded, groupCount, allLabel, dataIdx);
+      }
+      html += formatted;
+    } else {
+      // Close entity if we were in one
+      if (currentEntity) {
+        html += currentEntity._tooltipHtml + `</span>`;
+        currentEntity = null;
+      }
+      html += formatted;
+    }
+  }
+  // Close any remaining entity
+  if (currentEntity) {
+    html += currentEntity._tooltipHtml + `</span>`;
+  }
+  return html;
+}
+
+function buildTooltipHtml(e, isRemoved, isAdded, groupCount, allLabel, dataIdx) {
+  const label = e.type.replace('_', ' ');
+  return `<span class="entity-tooltip">${label}</span>`;
+}
+
+// Build family structure: group entities by substring matching (like server's _get_or_create_placeholder)
+function buildFamilies(confirmedEntities) {
+  // families: [{type, rootText, rootNorm, members: [{text, norm, indices, score}]}]
+  const families = [];
+
+  for (const e of confirmedEntities) {
+    const norm = e.text.trim().toLowerCase();
+    const type = e.type;
+    // Try to find existing family
+    let found = null;
+    if (norm.length >= 4) {
+      for (const fam of families) {
+        if (fam.type !== type) continue;
+        // Substring match (like server) OR shared root word (first word >=4 chars)
+        if (fam.rootNorm.length >= 4 && (norm.includes(fam.rootNorm) || fam.rootNorm.includes(norm))) {
+          found = fam; break;
+        }
+        // Also match if first significant word is the same (e.g. "globaltech industries" / "globaltech ltd.")
+        const w1 = norm.split(/\s+/)[0], w2 = fam.rootNorm.split(/\s+/)[0];
+        if (w1.length >= 4 && w1 === w2) {
+          found = fam; break;
+        }
+      }
+    }
+
+    if (found) {
+      // Add to existing family
+      const existing = found.members.find(m => m.norm === norm);
+      if (existing) {
+        existing.indices.push(e.idx);
+      } else {
+        found.members.push({ text: e.text, norm, indices: [e.idx], score: e.score });
+        // If this norm is shorter, it becomes root (family root = shortest form)
+        if (norm.length < found.rootNorm.length) {
+          found.rootText = e.text;
+          found.rootNorm = norm;
+        }
+      }
+    } else {
+      // New family
+      families.push({
+        type, rootText: e.text, rootNorm: norm,
+        members: [{ text: e.text, norm, indices: [e.idx], score: e.score }],
+      });
+    }
+  }
+
+  // Sort members: root first, then alphabetically
+  for (const fam of families) {
+    fam.members.sort((a, b) => {
+      if (a.norm === fam.rootNorm) return -1;
+      if (b.norm === fam.rootNorm) return 1;
+      return a.text.localeCompare(b.text);
+    });
+  }
+  return families;
+}
+
+function renderSidebar() {
+  const list = document.getElementById('entity-list');
+  const confirmedEntities = entities.filter(e => e.verified);
+  const families = buildFamilies(confirmedEntities);
+  currentFamilies = families;  // cache for keyboard navigation
+
+  if (families.length === 0 && addedEntities.length === 0) {
+    list.innerHTML = '<div style="padding:24px 16px;text-align:center;color:var(--text-secondary);font-size:13px;">No PII entities detected in this document.</div>';
+    return;
+  }
+
+  let html = '';
+  for (const fam of families) {
+    const allIndices = fam.members.flatMap(m => m.indices);
+    const totalCount = allIndices.length;
+    const allRemoved = allIndices.every(i => removedIndices.has(i));
+    const hasVariants = fam.members.length > 1;
+    const familyKey = makeGroupKey(fam.type, fam.rootText);
+    const isCollapsed = collapsedFamilies.has(familyKey);
+    const root = fam.members[0];
+    const firstIdx = root.indices[0];
+
+    // Root row
+    html += `<div class="entity-item ${getTypeClass(fam.type)} ${allRemoved ? 'removed' : ''}" data-group-key="${familyKey}" onclick="scrollToEntity(${firstIdx})" onmouseenter="highlightGroup('${familyKey}')" onmouseleave="unhighlightGroup('${familyKey}')">`;
+    if (hasVariants) {
+      html += `<span class="family-toggle ${isCollapsed ? 'collapsed' : ''}" onclick="event.stopPropagation(); toggleFamily('${familyKey}')">&#x25BC;</span>`;
+    }
+    html += `<span class="type-badge">${fam.type}</span>`;
+    html += `<span class="text">${escapeHtml(root.text)}</span>`;
+    if (totalCount > 1) html += `<span class="group-count">&times;${totalCount}</span>`;
+    html += `<span class="score">${(root.score * 100).toFixed(0)}%</span>`;
+    if (hasVariants) {
+      // Family root button — operates on ALL members
+      if (allRemoved) {
+        html += `<button class="action-btn restore-btn" title="Restore all" onclick="event.stopPropagation(); restoreFamilyAll([${allIndices.join(',')}])">&#x21A9;</button>`;
+      } else {
+        html += `<button class="action-btn remove-btn" title="Remove all" onclick="event.stopPropagation(); removeFamilyAll([${allIndices.join(',')}])">&#x2715;</button>`;
+      }
+    } else {
+      if (allRemoved) {
+        html += `<button class="action-btn restore-btn" title="Restore" onclick="event.stopPropagation(); restoreEntity(${firstIdx})">&#x21A9;</button>`;
+      } else {
+        html += `<button class="action-btn remove-btn" title="Remove" onclick="event.stopPropagation(); removeEntity(${firstIdx})">&#x2715;</button>`;
+      }
+    }
+    html += `</div>`;
+
+    // Variant rows (if expanded and >1 member)
+    if (hasVariants && !isCollapsed) {
+      for (let i = 1; i < fam.members.length; i++) {
+        const m = fam.members[i];
+        const variantKey = makeGroupKey(fam.type, m.text);
+        const varRemoved = m.indices.every(idx => removedIndices.has(idx));
+        const varFirstIdx = m.indices[0];
+        html += `<div class="entity-item variant ${getTypeClass(fam.type)} ${varRemoved ? 'removed' : ''}" data-group-key="${variantKey}" onclick="scrollToEntity(${varFirstIdx})" onmouseenter="highlightGroup('${variantKey}')" onmouseleave="unhighlightGroup('${variantKey}')">`;
+        html += `<span class="type-badge" style="font-size:9px">${String.fromCharCode(96 + i)}</span>`;
+        html += `<span class="text">${escapeHtml(m.text)}</span>`;
+        if (m.indices.length > 1) html += `<span class="group-count">&times;${m.indices.length}</span>`;
+        html += `<span class="score">${(m.score * 100).toFixed(0)}%</span>`;
+        if (varRemoved) {
+          html += `<button class="action-btn restore-btn" title="Restore" onclick="event.stopPropagation(); restoreEntity(${varFirstIdx})">&#x21A9;</button>`;
+        } else {
+          html += `<button class="action-btn remove-btn" title="Remove" onclick="event.stopPropagation(); removeEntity(${varFirstIdx})">&#x2715;</button>`;
+        }
+        html += `</div>`;
+      }
+    }
+  }
+
+  if (addedEntities.length > 0) {
+    const addedGroups = new Map();
+    for (let i = 0; i < addedEntities.length; i++) {
+      const e = addedEntities[i];
+      const key = makeGroupKey(e.type, e.text);
+      if (!addedGroups.has(key)) {
+        addedGroups.set(key, { type: e.type, text: e.text, indices: [i] });
+      } else {
+        addedGroups.get(key).indices.push(i);
+      }
+    }
+    html += `<div class="sidebar-header" style="margin-top:8px;padding:8px 12px">Added by you</div>`;
+    for (const [key, group] of addedGroups) {
+      const count = group.indices.length;
+      html += `<div class="entity-item ${getTypeClass(group.type)}">`;
+      html += `<span class="idx">+</span>`;
+      html += `<span class="type-badge">${group.type}</span>`;
+      html += `<span class="text">${escapeHtml(group.text)}</span>`;
+      if (count > 1) html += `<span class="group-count">&times;${count}</span>`;
+      html += `<button class="action-btn remove-btn" title="Remove all" onclick="event.stopPropagation(); removeAddedGroup('${key}')">&#x2715;</button>`;
+      html += `</div>`;
+    }
+  }
+
+  list.innerHTML = html;
+}
+
+function toggleFamily(familyKey) {
+  if (collapsedFamilies.has(familyKey)) collapsedFamilies.delete(familyKey);
+  else collapsedFamilies.add(familyKey);
+  renderSidebar();
+}
+
+function updateStats() {
+  const confirmed = entities.filter(e => e.verified).length;
+  document.getElementById('entity-count').textContent = confirmed - removedIndices.size + addedEntities.length;
+  document.getElementById('removed-count').textContent = removedIndices.size;
+  document.getElementById('added-count').textContent = addedEntities.length;
+}
+
+function toggleEntity(el) {
+  const source = el.dataset.source;
+  const idx = el.dataset.idx;
+  if (source === 'original') {
+    const numIdx = parseInt(idx);
+    if (removedIndices.has(numIdx)) restoreEntity(numIdx);
+    else removeEntity(numIdx);
+  } else if (source === 'added') {
+    removeAdded(parseInt(idx.replace('added_', '')));
+  }
+}
+
+function removeEntity(idx) {
+  // Remove ALL entities with the same text and type (all occurrences in document)
+  const entity = entities.find(e => e.idx === idx);
+  if (entity) {
+    const normText = entity.text.trim().toLowerCase();
+    const type = entity.type;
+    let count = 0;
+    for (const e of entities) {
+      if (e.verified && e.text.trim().toLowerCase() === normText && e.type === type) {
+        removedIndices.add(e.idx);
+        count++;
+      }
+    }
+    showToast(`Removed${count > 1 ? ` ${count} occurrences of` : ''} "${entity.text}"`, 'remove');
+  } else {
+    removedIndices.add(idx);
+  }
+  render();
+}
+
+function restoreEntity(idx) {
+  // Restore ALL entities with the same text and type
+  const entity = entities.find(e => e.idx === idx);
+  if (entity) {
+    const normText = entity.text.trim().toLowerCase();
+    const type = entity.type;
+    let count = 0;
+    for (const e of entities) {
+      if (e.text.trim().toLowerCase() === normText && e.type === type) {
+        removedIndices.delete(e.idx);
+        count++;
+      }
+    }
+    showToast(`Restored${count > 1 ? ` ${count} occurrences of` : ''} "${entity.text}"`, 'restore');
+  } else {
+    removedIndices.delete(idx);
+  }
+  render();
+}
+
+// Group highlight on hover
+function highlightGroup(groupKey) {
+  document.querySelectorAll(`[data-group-key="${groupKey}"]`).forEach(el => el.classList.add('group-hover'));
+}
+function unhighlightGroup(groupKey) {
+  document.querySelectorAll(`[data-group-key="${groupKey}"]`).forEach(el => el.classList.remove('group-hover'));
+}
+
+// Toast notification
+let toastTimer = null;
+function showToast(message, type) {
+  const toast = document.getElementById('toast');
+  toast.querySelector('.toast-icon').textContent = type === 'remove' ? '\u2796' : '\u2795';
+  toast.querySelector('.toast-text').textContent = message;
+  toast.classList.add('visible');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('visible'), 2500);
+}
+
+function removeAdded(idx) {
+  addedEntities.splice(idx, 1);
+  render();
+}
+
+function removeAddedGroup(groupKey) {
+  addedEntities = addedEntities.filter(e => makeGroupKey(e.type, e.text) !== groupKey);
+  render();
+}
+
+function removeFamilyAll(indices) {
+  for (const idx of indices) removedIndices.add(idx);
+  showToast(`Removed ${indices.length} entities (all variants)`, 'remove');
+  render();
+}
+
+function restoreFamilyAll(indices) {
+  for (const idx of indices) removedIndices.delete(idx);
+  showToast(`Restored ${indices.length} entities (all variants)`, 'restore');
+  render();
+}
+
+function resetAll() {
+  if (removedIndices.size === 0 && addedEntities.length === 0) return;
+  if (!confirm('Reset all changes? This will restore all removed entities and discard added ones.')) return;
+  removedIndices.clear();
+  addedEntities = [];
+  showToast('All changes reset', 'restore');
+  render();
+}
+
+// Text selection → add entity
+let pendingSelection = null;
+let toolbarShownAt = 0;  // timestamp when toolbar was last shown
+
+function showToolbarForSelection(e) {
+  const toolbar = document.getElementById('selection-toolbar');
+  const sel = window.getSelection();
+  const text = sel.toString().trim();
+
+  if (!text || text.length < 2 || e.target.closest('.selection-toolbar') || e.target.closest('.sidebar')) {
+    if (!e.target.closest('.selection-toolbar')) toolbar.classList.remove('visible');
+    return;
+  }
+
+  // Find the position in originalText
+  const range = sel.getRangeAt(0);
+  const container = document.getElementById('doc-content');
+  if (!container.contains(range.commonAncestorContainer)) {
+    toolbar.classList.remove('visible');
+    return;
+  }
+
+  // Calculate start position by walking the DOM to find offset in originalText
+  const start = findTextPositionFromRange(range, container, text);
+  if (start === -1) {
+    toolbar.classList.remove('visible');
+    return;
+  }
+
+  pendingSelection = { text, start, end: start + text.length };
+
+  // Position toolbar near selection, clamped to viewport
+  const rect = range.getBoundingClientRect();
+  const toolbarW = 260;
+  let left = rect.left + rect.width / 2 - toolbarW / 2;
+  let top = rect.top - 44;
+  left = Math.max(8, Math.min(left, window.innerWidth - toolbarW - 8));
+  if (top < 8) top = rect.bottom + 8;  // flip below if too close to top
+  toolbar.style.left = `${left}px`;
+  toolbar.style.top = `${top}px`;
+  toolbar.classList.add('visible');
+  toolbarShownAt = Date.now();
+}
+
+document.addEventListener('mouseup', showToolbarForSelection);
+
+// Double-click: browser selects a word, then show toolbar (fires after mouseup)
+document.addEventListener('dblclick', (e) => {
+  // Small delay to let browser finalize word selection
+  setTimeout(() => showToolbarForSelection(e), 10);
+});
+
+function findTextPositionFromRange(range, container, selectedText) {
+  // Walk visible text nodes (skip tooltips) to calculate character offset in originalText
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      // Skip text inside tooltips — they are not part of the document text
+      if (node.parentElement && node.parentElement.closest('.entity-tooltip')) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+  let charOffset = 0;
+  let node;
+  while ((node = walker.nextNode())) {
+    if (node === range.startContainer) {
+      const approxPos = charOffset + range.startOffset;
+      // Verify match at calculated position
+      if (originalText.substr(approxPos, selectedText.length) === selectedText) return approxPos;
+      // Search nearby (entity spans may shift offsets slightly)
+      const searchStart = Math.max(0, approxPos - 100);
+      const region = originalText.substring(searchStart, Math.min(originalText.length, approxPos + 100));
+      const localIdx = region.indexOf(selectedText);
+      if (localIdx !== -1) return searchStart + localIdx;
+      return originalText.indexOf(selectedText);
+    }
+    charOffset += node.textContent.length;
+  }
+  return originalText.indexOf(selectedText);
+}
+
+function toggleTypeDropdown() {
+  document.getElementById('type-dropdown').classList.toggle('visible');
+}
+
+function addEntity(type) {
+  document.getElementById('type-dropdown').classList.remove('visible');
+  if (!pendingSelection) return;
+  const searchText = pendingSelection.text;
+  const newLen = searchText.length;
+  let pos = 0;
+  let count = 0;
+  while ((pos = originalText.indexOf(searchText, pos)) !== -1) {
+    const newStart = pos, newEnd = pos + newLen;
+
+    // Check overlapping original entities
+    const overlappingOriginals = entities.filter(e =>
+      e.verified && !removedIndices.has(e.idx) && e.start < newEnd && e.end > newStart);
+
+    // Check overlapping added entities
+    const overlappingAdded = addedEntities.filter(e => e.start < newEnd && e.end > newStart);
+
+    // If any overlapping entity covers same or more text — skip this position
+    // (existing entity already covers it, don't remove-and-readd)
+    const blockedByExisting = overlappingOriginals.some(e => (e.end - e.start) >= newLen)
+      || overlappingAdded.some(e => (e.end - e.start) >= newLen);
+
+    if (blockedByExisting) {
+      pos += newLen;
+      continue;
+    }
+
+    // Remove overlapping entities that are shorter/equal (new entity supersedes them)
+    for (const e of overlappingOriginals) {
+      removedIndices.add(e.idx);
+    }
+    addedEntities = addedEntities.filter(e => !(e.start < newEnd && e.end > newStart));
+
+    addedEntities.push({ text: searchText, type, start: newStart, end: newEnd });
+    count++;
+    pos += newLen;
+  }
+  if (count > 1) showToast(`Added ${count} occurrences of "${searchText}"`, 'restore');
+  pendingSelection = null;
+  document.getElementById('selection-toolbar').classList.remove('visible');
+  window.getSelection().removeAllRanges();
+  render();
+}
+
+// Approve
+async function approve() {
+  const btn = document.getElementById('approve-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+
+  const overrides = {
+    remove: Array.from(removedIndices),
+    add: addedEntities.map(e => ({ text: e.text, type: e.type, start: e.start, end: e.end })),
+  };
+
+  if (window.STANDALONE_MODE) {
+    // Standalone mode: the ONLY approval pipeline is a plain-JSON auto-download
+    // to the user's browser Downloads folder. The MCP server finds it via
+    // filesystem search (~/Downloads, ~, cwd, cwd/Downloads) and re-anonymizes
+    // with the overrides. No HTTP server, no localhost, no clipboard paste,
+    // no encrypted code blob — the user explicitly asked for the Downloads-only
+    // pipeline.
+    const decisions = {
+      session_id: SESSION_ID,
+      approved: true,
+      overrides,
+      timestamp: Date.now(),
+    };
+    const jsonStr = JSON.stringify(decisions);
+    const fileName = `review_${SESSION_ID}_decisions.json`;
+
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    let savedVia = 'download';
+    let savedPath = '';
+
+    // Phase 6 Fix 6.3 — preferred path: write directly into the workspace
+    // folder (the same folder this HTML lives in). On first Approve in a
+    // given workspace we ask for a FileSystemDirectoryHandle via
+    // showDirectoryPicker, persist it in IndexedDB keyed by WORKSPACE_DIR,
+    // then write the JSON straight in. Subsequent reviews in the same
+    // workspace skip the picker entirely. This makes the JSON visible to the
+    // VM-side server (which can ONLY see the VirtioFS workspace mount in
+    // Cowork) without forcing the user to manually move files.
+    const WORKSPACE_DIR = window.WORKSPACE_DIR || '';
+
+    async function _idbOpen() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open('pii-shield', 1);
+        req.onupgradeneeded = () => req.result.createObjectStore('handles');
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    async function _idbGet(key) {
+      try {
+        const db = await _idbOpen();
+        return await new Promise((resolve, reject) => {
+          const tx = db.transaction('handles', 'readonly');
+          const req = tx.objectStore('handles').get(key);
+          req.onsuccess = () => resolve(req.result || null);
+          req.onerror = () => reject(req.error);
+        });
+      } catch { return null; }
+    }
+    async function _idbSet(key, val) {
+      try {
+        const db = await _idbOpen();
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction('handles', 'readwrite');
+          tx.objectStore('handles').put(val, key);
+          tx.oncomplete = resolve;
+          tx.onerror = () => reject(tx.error);
+        });
+      } catch { /* ignore */ }
+    }
+    async function _ensurePerm(handle) {
+      if (!handle || !handle.queryPermission) return false;
+      const opts = { mode: 'readwrite' };
+      let perm = await handle.queryPermission(opts);
+      if (perm === 'granted') return true;
+      perm = await handle.requestPermission(opts);
+      return perm === 'granted';
+    }
+
+    if (window.showDirectoryPicker) {
+      try {
+        const cacheKey = WORKSPACE_DIR || 'pii-shield-default';
+        let dirHandle = await _idbGet(cacheKey);
+        if (dirHandle) {
+          const ok = await _ensurePerm(dirHandle);
+          if (!ok) dirHandle = null;
+        }
+        if (!dirHandle) {
+          dirHandle = await window.showDirectoryPicker({
+            id: 'pii-shield-workspace',
+            mode: 'readwrite',
+            startIn: 'documents',
+          });
+          if (await _ensurePerm(dirHandle)) {
+            await _idbSet(cacheKey, dirHandle);
+          }
+        }
+        if (dirHandle) {
+          const fh = await dirHandle.getFileHandle(fileName, { create: true });
+          const writable = await fh.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          savedVia = 'workspace';
+          savedPath = (dirHandle.name ? dirHandle.name + '/' : '') + fileName;
+        }
+      } catch (err) {
+        if (err && err.name === 'AbortError') {
+          // User cancelled the picker. Re-enable the button so they can try
+          // again or pick a different save target.
+          btn.disabled = false;
+          btn.textContent = 'Approve';
+          return;
+        }
+        console.warn('showDirectoryPicker failed, falling back:', err);
+      }
+    }
+
+    // Fallback 1: Save As dialog (still better than blind download).
+    if (savedVia === 'download' && window.showSaveFilePicker) {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: fileName,
+          types: [{ description: 'PII Shield decisions JSON', accept: { 'application/json': ['.json'] } }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        savedVia = 'picker';
+      } catch (err) {
+        if (err && err.name === 'AbortError') {
+          btn.disabled = false;
+          btn.textContent = 'Approve';
+          return;
+        }
+        console.warn('showSaveFilePicker failed, falling back to download:', err);
+      }
+    }
+
+    if (savedVia === 'download') {
+      try {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'Approve';
+        alert('Failed to save decisions file: ' + (err && err.message ? err.message : err));
+        return;
+      }
+    }
+
+    // Show the right hint depending on which path succeeded.
+    const savedHintEl = document.getElementById('approved-saved-hint');
+    if (savedHintEl) {
+      if (savedVia === 'workspace') {
+        savedHintEl.textContent = 'Saved directly into the workspace folder (' + savedPath + '). You can close this tab and tell Claude "continue".';
+      } else if (savedVia === 'picker') {
+        savedHintEl.textContent = 'Saved to the folder you chose. If your Claude session runs in Cowork, make sure that folder is the workspace folder (the one containing this review HTML). Then tell Claude "continue".';
+      } else {
+        savedHintEl.textContent = 'Saved to your browser Downloads folder. IMPORTANT: if your Claude session runs inside Cowork, MOVE or COPY this file into the same folder where this review HTML is located — that is the only folder the server can see. Then tell Claude "continue".';
+      }
+    }
+
+    const fnEl = document.getElementById('approved-filename');
+    if (fnEl) fnEl.textContent = fileName;
+    document.getElementById('approved-overlay').classList.add('visible');
+    return;
+  }
+
+  try {
+    await fetch(`${API_BASE}/api/approve/${SESSION_ID}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(overrides),
+    });
+    document.getElementById('approved-overlay').classList.add('visible');
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Approve';
+    alert('Failed to save: ' + err.message);
+  }
+}
+
+function scrollToEntity(idx) {
+  const el = document.querySelector(`.entity[data-idx="${idx}"][data-source="original"]`);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// ============================================================
+// Split View
+// ============================================================
+
+function toggleSplitView() {
+  splitView = !splitView;
+  const main = document.getElementById('main-container');
+  const btn = document.getElementById('split-btn');
+  main.classList.toggle('split-view', splitView);
+  btn.classList.toggle('active', splitView);
+  if (splitView) {
+    renderAnonymizedPanel();
+    setupScrollSync();
+  }
+}
+
+const PH_GROUP = {
+  PERSON: 'PERSON', NRP: 'PERSON',
+  ORGANIZATION: 'ORG', ORG: 'ORG',
+  LOCATION: 'LOCATION',
+  EMAIL_ADDRESS: 'COMM', PHONE_NUMBER: 'COMM', URL: 'COMM', IP_ADDRESS: 'COMM',
+  CREDIT_CARD: 'FINANCIAL', IBAN_CODE: 'FINANCIAL', CRYPTO: 'FINANCIAL',
+  US_SSN: 'ID_DOC', US_PASSPORT: 'ID_DOC', US_DRIVER_LICENSE: 'ID_DOC',
+  UK_NHS: 'ID_DOC', UK_NIN: 'ID_DOC', UK_PASSPORT: 'ID_DOC', UK_CRN: 'ID_DOC', UK_DRIVING_LICENCE: 'ID_DOC',
+  EU_VAT: 'ID_DOC', EU_PASSPORT: 'ID_DOC',
+  DE_TAX_ID: 'ID_DOC', DE_SOCIAL_SECURITY: 'ID_DOC',
+  FR_NIR: 'ID_DOC', FR_CNI: 'ID_DOC',
+  IT_FISCAL_CODE: 'ID_DOC', IT_VAT: 'ID_DOC',
+  ES_DNI: 'ID_DOC', ES_NIE: 'ID_DOC',
+  CY_TIC: 'ID_DOC', CY_ID_CARD: 'ID_DOC',
+  MEDICAL_LICENSE: 'MEDICAL',
+};
+
+function renderAnonymizedPanel() {
+  const container = document.getElementById('doc-content-anon');
+  if (!anonymizedText) { container.textContent = 'Anonymized text not available.'; return; }
+
+  // Parse placeholders like <ORG_1>, <PERSON_2a> and colorize them
+  const paragraphs = anonymizedText.split('\n');
+  let html = '';
+  for (const para of paragraphs) {
+    html += '<p>' + escapeHtml(para).replace(/&lt;(\w+?)&gt;/g, (match, tag) => {
+      // Extract base type from tag like "ORG_1", "PERSON_2a", "D1_ORG_1"
+      const stripped = tag.replace(/^D\d+_/, '');  // remove prefix like D1_
+      const baseType = stripped.replace(/_\d+\w*$/, '');  // ORG, PERSON, etc.
+      const group = PH_GROUP[baseType] || 'OTHER';
+      return `<span class="anon-placeholder ph-${group}">&lt;${tag}&gt;</span>`;
+    }) + '</p>';
+  }
+  container.innerHTML = html;
+}
+
+function setupScrollSync() {
+  const origPane = document.querySelector('.doc-pane-orig');
+  const anonPane = document.querySelector('.doc-pane-anon');
+  if (!origPane || !anonPane) return;
+
+  let syncing = false;
+  function syncScroll(source, target) {
+    if (syncing) return;
+    syncing = true;
+    const pct = source.scrollTop / (source.scrollHeight - source.clientHeight || 1);
+    target.scrollTop = pct * (target.scrollHeight - target.clientHeight || 1);
+    syncing = false;
+  }
+  origPane.addEventListener('scroll', () => syncScroll(origPane, anonPane));
+  anonPane.addEventListener('scroll', () => syncScroll(anonPane, origPane));
+}
+
+// ============================================================
+// Keyboard Shortcuts
+// ============================================================
+
+function focusFamily(idx) {
+  focusedFamilyIdx = idx;
+  // Clear previous focus highlights
+  document.querySelectorAll('.entity.focused').forEach(el => el.classList.remove('focused'));
+  document.querySelectorAll('.entity-item.focused').forEach(el => el.classList.remove('focused'));
+
+  if (idx < 0 || idx >= currentFamilies.length) { focusedFamilyIdx = -1; return; }
+
+  const fam = currentFamilies[idx];
+  const groupKey = makeGroupKey(fam.type, fam.rootText);
+
+  // Highlight sidebar item
+  const sidebarItem = document.querySelector(`.entity-item[data-group-key="${groupKey}"]`);
+  if (sidebarItem) {
+    sidebarItem.classList.add('focused');
+    sidebarItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  // Highlight all document entities in this family
+  document.querySelectorAll(`.entity[data-group-key="${groupKey}"]`).forEach(el => el.classList.add('focused'));
+
+  // Scroll to first occurrence in document
+  const firstIdx = fam.members[0].indices[0];
+  scrollToEntity(firstIdx);
+}
+
+function getFocusedFamily() {
+  if (focusedFamilyIdx < 0 || focusedFamilyIdx >= currentFamilies.length) return null;
+  return currentFamilies[focusedFamilyIdx];
+}
+
+document.addEventListener('keydown', (e) => {
+  // Skip if user is typing in an input or has text selected (for add-entity workflow)
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.target.isContentEditable) return;
+  const sel = window.getSelection();
+  if (sel && sel.toString().trim().length > 0 && e.key !== 'Escape' && e.key !== 'Tab') return;
+
+  const key = e.key;
+
+  // Tab / Shift+Tab — navigate entities
+  if (key === 'Tab') {
+    e.preventDefault();
+    if (currentFamilies.length === 0) return;
+    if (e.shiftKey) {
+      focusFamily(focusedFamilyIdx <= 0 ? currentFamilies.length - 1 : focusedFamilyIdx - 1);
+    } else {
+      focusFamily(focusedFamilyIdx >= currentFamilies.length - 1 ? 0 : focusedFamilyIdx + 1);
+    }
+    return;
+  }
+
+  // D — delete/remove focused entity
+  if (key === 'd' || key === 'D') {
+    const fam = getFocusedFamily();
+    if (!fam) return;
+    const allIndices = fam.members.flatMap(m => m.indices);
+    const allRemoved = allIndices.every(i => removedIndices.has(i));
+    if (!allRemoved) {
+      removeFamilyAll(allIndices);
+      // Re-focus same index after re-render
+      setTimeout(() => focusFamily(focusedFamilyIdx), 50);
+    }
+    return;
+  }
+
+  // R — restore focused entity
+  if (key === 'r' || key === 'R') {
+    const fam = getFocusedFamily();
+    if (!fam) return;
+    const allIndices = fam.members.flatMap(m => m.indices);
+    const anyRemoved = allIndices.some(i => removedIndices.has(i));
+    if (anyRemoved) {
+      restoreFamilyAll(allIndices);
+      setTimeout(() => focusFamily(focusedFamilyIdx), 50);
+    }
+    return;
+  }
+
+  // A — approve
+  if (key === 'a' || key === 'A') {
+    approve();
+    return;
+  }
+
+  // Escape — clear focus, close dropdowns
+  if (key === 'Escape') {
+    focusFamily(-1);
+    document.getElementById('selection-toolbar').classList.remove('visible');
+    document.getElementById('type-dropdown').classList.remove('visible');
+    return;
+  }
+});
+
+// Close selection toolbar on click outside (but not right after showing it)
+document.addEventListener('mousedown', (e) => {
+  // Close type dropdown on outside click
+  if (!e.target.closest('.type-dropdown') && !e.target.closest('.type-btn-more')) {
+    document.getElementById('type-dropdown').classList.remove('visible');
+  }
+  if (!e.target.closest('.selection-toolbar')) {
+    setTimeout(() => {
+      // Don't hide if toolbar was just shown (e.g. during double-click)
+      if (Date.now() - toolbarShownAt < 400) return;
+      if (!e.target.closest('.selection-toolbar')) {
+        document.getElementById('selection-toolbar').classList.remove('visible');
+      }
+    }, 300);
+  }
+});
+
+// Init on load
+init();
+</script>
+</body>
+</html>

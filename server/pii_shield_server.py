@@ -1216,6 +1216,7 @@ class PIIEngine:
         # Store review data for potential HITL review (memory + disk for cross-process access)
         review_data = {
             "original_text": text,
+            "anonymized_text": anonymized,
             "entities": [{"type": e["type"], "text": e["text"], "start": e["start"],
                           "end": e["end"], "score": e["score"], "verified": e.get("verified", False)}
                          for e in entities],
@@ -2146,6 +2147,7 @@ def get_full_anonymized_text(session_id: str) -> str:
                         for e in cs["all_entities"]]
     review_data = {
         "original_text": cs["text"],
+        "anonymized_text": anonymized,
         "entities": all_entities_raw,
         "confirmed": list(range(len(all_entities_raw))),
         "status": "pending",
@@ -2688,6 +2690,8 @@ class _ReviewHandler(BaseHTTPRequestHandler):
         }
         if "original_html" in review:
             data["original_html"] = review["original_html"]
+        if "anonymized_text" in review:
+            data["anonymized_text"] = review["anonymized_text"]
         self._send_json(data)
 
     def _handle_approve(self, session_id, body):
@@ -2783,8 +2787,8 @@ def _start_review_server():
 @mcp.tool()
 @_audit_tool
 def start_review(session_id: str = "") -> str:
-    """Start local review server and return the URL. Does NOT open the browser — Claude presents the link to the user via AskUserQuestion.
-    PII stays on your machine."""
+    """Start local review server, open the review page in the default browser, and return the URL.
+    PII stays on your machine — the review page runs on localhost."""
     sid = session_id.strip() or _latest_session_id()
     if not sid:
         return json.dumps({"error": "No session. Run anonymize_file first."})
@@ -2798,11 +2802,21 @@ def start_review(session_id: str = "") -> str:
     log.info(f"Server script at: {Path(__file__).resolve()}")
     url = f"http://localhost:{port}/review/{sid}"
     entity_count = len([i for i in review.get("confirmed", [])])
+
+    # Auto-open browser for convenience
+    import webbrowser
+    try:
+        webbrowser.open(url)
+        browser_opened = True
+    except Exception:
+        browser_opened = False
+
     return json.dumps({
         "url": url,
         "session_id": sid,
         "entities_count": entity_count,
-        "note": "Review server ready. Present this URL to the user via AskUserQuestion. Do NOT open browser automatically.",
+        "browser_opened": browser_opened,
+        "note": "Review page opened in browser." if browser_opened else "Could not open browser — user should open the URL manually.",
     }, indent=2, ensure_ascii=False)
 
 
@@ -2868,7 +2882,108 @@ print("OK")
     return str(cert_file), str(key_file)
 
 
+# ============================================================
+# Subprocess mode  (Node.js proxy → Python backend via JSON-RPC)
+# ============================================================
+_SUBPROCESS_DISPATCH = {
+    "anonymize_text": anonymize_text,
+    "anonymize_file": anonymize_file,
+    "anonymize_next_chunk": anonymize_next_chunk,
+    "get_full_anonymized_text": get_full_anonymized_text,
+    "find_file": find_file,
+    "resolve_path": resolve_path,
+    "anonymize_docx": anonymize_docx,
+    "deanonymize_text": deanonymize_text,
+    "deanonymize_docx": deanonymize_docx,
+    "get_mapping": get_mapping,
+    "scan_text": scan_text,
+    "list_entities": list_entities,
+    "start_review": start_review,
+    "get_review_status": get_review_status,
+}
+
+
+def _run_subprocess_mode():
+    """JSON-RPC worker over stdin/stdout for Node.js proxy."""
+    import io
+    import threading
+
+    # Ensure nothing leaks to stdout except our JSON-RPC protocol
+    _real_stdout = sys.stdout
+    sys.stdout = sys.stderr  # redirect any stray prints to stderr
+
+    def _send_progress():
+        """Periodically send boot progress to stdout so the proxy can report it."""
+        last_msg = None
+        while _boot_progress.get("phase") not in ("ready", "error"):
+            msg = {
+                "status": "progress",
+                "phase": _boot_progress.get("phase", "starting"),
+                "message": _boot_progress.get("message", "Starting up..."),
+                "pct": _boot_progress.get("pct", 0),
+            }
+            serialized = json.dumps(msg)
+            if serialized != last_msg:
+                _real_stdout.write(serialized + "\n")
+                _real_stdout.flush()
+                last_msg = serialized
+            _time_boot.sleep(2)
+
+    log.info("Subprocess mode: loading models synchronously...")
+    _boot_progress["start"] = _time_boot.monotonic()
+
+    # Start progress reporter in background
+    progress_thread = threading.Thread(target=_send_progress, daemon=True)
+    progress_thread.start()
+
+    _sync_model_load()
+
+    # Send ready signal
+    _real_stdout.write(json.dumps({"status": "ready"}) + "\n")
+    _real_stdout.flush()
+    log.info("Subprocess mode: ready, waiting for JSON-RPC requests on stdin...")
+
+    # Read JSON-RPC requests line by line from stdin
+    for line in io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8"):
+        line = line.strip()
+        if not line:
+            continue
+
+        req_id = None
+        try:
+            req = json.loads(line)
+            req_id = req.get("id")
+            method = req.get("method", "")
+            params = req.get("params", {})
+
+            handler = _SUBPROCESS_DISPATCH.get(method)
+            if handler is None:
+                resp = {"jsonrpc": "2.0", "id": req_id, "error": {
+                    "code": -32601, "message": f"Unknown method: {method}"}}
+            else:
+                result = handler(**params)
+                resp = {"jsonrpc": "2.0", "id": req_id, "result": result}
+
+        except json.JSONDecodeError as e:
+            resp = {"jsonrpc": "2.0", "id": req_id, "error": {
+                "code": -32700, "message": f"Parse error: {e}"}}
+        except TypeError as e:
+            resp = {"jsonrpc": "2.0", "id": req_id, "error": {
+                "code": -32602, "message": f"Invalid params: {e}"}}
+        except Exception as e:
+            log.error(f"Subprocess handler error: {e}", exc_info=True)
+            resp = {"jsonrpc": "2.0", "id": req_id, "error": {
+                "code": -32000, "message": str(e)}}
+
+        _real_stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
+        _real_stdout.flush()
+
+
 if __name__ == "__main__":
+    if "--mode=subprocess" in sys.argv:
+        _run_subprocess_mode()
+        sys.exit(0)
+
     transport = "sse" if "--sse" in sys.argv else "stdio"
     port = int(os.environ.get("PII_PORT", "8765"))
 
