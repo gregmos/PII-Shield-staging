@@ -124,6 +124,7 @@ async function build() {
   // Plugin metadata
   addFileToZip(zip, ".claude-plugin/plugin.json", path.join(__dirname, ".claude-plugin/plugin.json"));
   addFileToZip(zip, ".mcp.json", path.join(__dirname, ".mcp.json"));
+  addFileToZip(zip, ".claude/launch.json", path.join(__dirname, ".claude/launch.json"));
 
   // Slash commands (e.g. /pii-debug-logs) — loaded by Claude Code's plugin
   // command scanner from the plugin-root `commands/` dir.

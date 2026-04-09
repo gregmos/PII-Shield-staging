@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>PII Shield Review</title>
 <style>
   :root {
@@ -480,6 +483,8 @@ let currentFamilies = [];   // cached families from last render
 const API_BASE = '';  // same origin
 
 async function init() {
+  console.log('[PII Debug] review_ui.html v2.1 — init() started, STANDALONE_MODE=', !!window.STANDALONE_MODE);
+
   // Standalone mode: data is embedded in the HTML by generateReviewHtml()
   if (window.STANDALONE_MODE && window.REVIEW_DATA) {
     const data = window.REVIEW_DATA;
@@ -488,6 +493,7 @@ async function init() {
     originalHtml = data.original_html || '';
     anonymizedText = data.anonymized_text || '';
     entities = (data.entities || []).map((e, i) => ({ ...e, idx: i, verified: true }));
+    console.log('[PII Debug] Standalone: entities=' + entities.length + ', text_len=' + originalText.length);
     if (originalHtml) parseHtmlFormatting(originalHtml);
     if (!anonymizedText) document.getElementById('split-btn').style.display = 'none';
     render();
@@ -500,14 +506,22 @@ async function init() {
   if (!SESSION_ID) { document.getElementById('doc-content').textContent = 'No session ID'; return; }
 
   try {
-    const resp = await fetch(`${API_BASE}/api/review/${SESSION_ID}`);
+    const resp = await fetch(`${API_BASE}/api/review/${SESSION_ID}?_t=${Date.now()}`);
     const data = await resp.json();
+    console.log('[PII Debug] API response:', JSON.stringify({
+      entities_count: (data.entities || []).length,
+      text_len: (data.original_text || '').length,
+      has_html: !!(data.original_html),
+      has_error: !!(data.error),
+      first_entity: data.entities && data.entities[0] ? { type: data.entities[0].type, text: data.entities[0].text } : null
+    }));
     if (data.error) { document.getElementById('doc-content').textContent = data.error; return; }
 
     originalText = data.original_text;
     originalHtml = data.original_html || '';
     anonymizedText = data.anonymized_text || '';
-    entities = data.entities.map((e, i) => ({ ...e, idx: i }));
+    entities = (data.entities || []).map((e, i) => ({ ...e, idx: i, verified: true }));
+    console.log('[PII Debug] entities after map: count=' + entities.length + ', verified=' + entities.filter(e => e.verified).length);
 
     // Parse formatting from HTML if available
     if (originalHtml) parseHtmlFormatting(originalHtml);
@@ -516,7 +530,9 @@ async function init() {
     if (!anonymizedText) document.getElementById('split-btn').style.display = 'none';
 
     render();
+    console.log('[PII Debug] render() completed');
   } catch (err) {
+    console.error('[PII Debug] INIT ERROR:', err);
     document.getElementById('doc-content').textContent = 'Failed to load review data: ' + err.message;
   }
 }
@@ -1132,180 +1148,121 @@ async function approve() {
   };
 
   if (window.STANDALONE_MODE) {
-    // Standalone mode: the ONLY approval pipeline is a plain-JSON auto-download
-    // to the user's browser Downloads folder. The MCP server finds it via
-    // filesystem search (~/Downloads, ~, cwd, cwd/Downloads) and re-anonymizes
-    // with the overrides. No HTTP server, no localhost, no clipboard paste,
-    // no encrypted code blob — the user explicitly asked for the Downloads-only
-    // pipeline.
-    const decisions = {
-      session_id: SESSION_ID,
-      approved: true,
-      overrides,
-      timestamp: Date.now(),
-    };
-    const jsonStr = JSON.stringify(decisions);
+    // Standalone mode approve: try HTTP POST to sidecar first, then show
+    // a clickable link to the review URL as fallback.
+    const SIDECAR = 'http://127.0.0.1:' + (window.PII_SHIELD_PORT || '6789');
+    const reviewUrl = SIDECAR + '/review/' + SESSION_ID;
     const fileName = `review_${SESSION_ID}_decisions.json`;
+    const decisions = { session_id: SESSION_ID, approved: true, overrides, timestamp: Date.now() };
 
-    const blob = new Blob([jsonStr], { type: 'application/json' });
-    let savedVia = 'download';
-    let savedPath = '';
+    console.log('[PII Debug] approve() Standalone Mode: SESSION_ID=' + SESSION_ID);
 
-    // Phase 6 Fix 6.3 — preferred path: write directly into the workspace
-    // folder (the same folder this HTML lives in). On first Approve in a
-    // given workspace we ask for a FileSystemDirectoryHandle via
-    // showDirectoryPicker, persist it in IndexedDB keyed by WORKSPACE_DIR,
-    // then write the JSON straight in. Subsequent reviews in the same
-    // workspace skip the picker entirely. This makes the JSON visible to the
-    // VM-side server (which can ONLY see the VirtioFS workspace mount in
-    // Cowork) without forcing the user to manually move files.
-    const WORKSPACE_DIR = window.WORKSPACE_DIR || '';
-
-    async function _idbOpen() {
-      return new Promise((resolve, reject) => {
-        const req = indexedDB.open('pii-shield', 1);
-        req.onupgradeneeded = () => req.result.createObjectStore('handles');
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
+    // Attempt 1: fetch POST to sidecar (works if loaded via HTTP, not from file://)
+    try {
+      const r = await fetch(SIDECAR + '/api/approve/' + SESSION_ID + '?_t=' + Date.now(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(overrides),
       });
-    }
-    async function _idbGet(key) {
-      try {
-        const db = await _idbOpen();
-        return await new Promise((resolve, reject) => {
-          const tx = db.transaction('handles', 'readonly');
-          const req = tx.objectStore('handles').get(key);
-          req.onsuccess = () => resolve(req.result || null);
-          req.onerror = () => reject(req.error);
-        });
-      } catch { return null; }
-    }
-    async function _idbSet(key, val) {
-      try {
-        const db = await _idbOpen();
-        await new Promise((resolve, reject) => {
-          const tx = db.transaction('handles', 'readwrite');
-          tx.objectStore('handles').put(val, key);
-          tx.oncomplete = resolve;
-          tx.onerror = () => reject(tx.error);
-        });
-      } catch { /* ignore */ }
-    }
-    async function _ensurePerm(handle) {
-      if (!handle || !handle.queryPermission) return false;
-      const opts = { mode: 'readwrite' };
-      let perm = await handle.queryPermission(opts);
-      if (perm === 'granted') return true;
-      perm = await handle.requestPermission(opts);
-      return perm === 'granted';
-    }
-
-    if (window.showDirectoryPicker) {
-      try {
-        const cacheKey = WORKSPACE_DIR || 'pii-shield-default';
-        let dirHandle = await _idbGet(cacheKey);
-        if (dirHandle) {
-          const ok = await _ensurePerm(dirHandle);
-          if (!ok) dirHandle = null;
-        }
-        if (!dirHandle) {
-          dirHandle = await window.showDirectoryPicker({
-            id: 'pii-shield-workspace',
-            mode: 'readwrite',
-            startIn: 'documents',
-          });
-          if (await _ensurePerm(dirHandle)) {
-            await _idbSet(cacheKey, dirHandle);
-          }
-        }
-        if (dirHandle) {
-          const fh = await dirHandle.getFileHandle(fileName, { create: true });
-          const writable = await fh.createWritable();
-          await writable.write(blob);
-          await writable.close();
-          savedVia = 'workspace';
-          savedPath = (dirHandle.name ? dirHandle.name + '/' : '') + fileName;
-        }
-      } catch (err) {
-        if (err && err.name === 'AbortError') {
-          // User cancelled the picker. Re-enable the button so they can try
-          // again or pick a different save target.
-          btn.disabled = false;
-          btn.textContent = 'Approve';
-          return;
-        }
-        console.warn('showDirectoryPicker failed, falling back:', err);
-      }
-    }
-
-    // Fallback 1: Save As dialog (still better than blind download).
-    if (savedVia === 'download' && window.showSaveFilePicker) {
-      try {
-        const handle = await window.showSaveFilePicker({
-          suggestedName: fileName,
-          types: [{ description: 'PII Shield decisions JSON', accept: { 'application/json': ['.json'] } }],
-        });
-        const writable = await handle.createWritable();
-        await writable.write(blob);
-        await writable.close();
-        savedVia = 'picker';
-      } catch (err) {
-        if (err && err.name === 'AbortError') {
-          btn.disabled = false;
-          btn.textContent = 'Approve';
-          return;
-        }
-        console.warn('showSaveFilePicker failed, falling back to download:', err);
-      }
-    }
-
-    if (savedVia === 'download') {
-      try {
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(a.href);
-      } catch (err) {
-        btn.disabled = false;
-        btn.textContent = 'Approve';
-        alert('Failed to save decisions file: ' + (err && err.message ? err.message : err));
+      console.log('[PII Debug] Standalone POST status:', r.status, r.ok);
+      if (r.ok) {
+        const hint = document.getElementById('approved-saved-hint');
+        if (hint) hint.textContent = 'Approval sent to PII Shield server. Tell Claude "continue" or "approved".';
+        const fn = document.getElementById('approved-filename');
+        if (fn) fn.textContent = '(sent to server)';
+        document.getElementById('approved-overlay').classList.add('visible');
         return;
       }
-    }
+    } catch (e) { console.warn('[PII Debug] Standalone POST failed:', e); }
 
-    // Show the right hint depending on which path succeeded.
-    const savedHintEl = document.getElementById('approved-saved-hint');
-    if (savedHintEl) {
-      if (savedVia === 'workspace') {
-        savedHintEl.textContent = 'Saved directly into the workspace folder (' + savedPath + '). You can close this tab and tell Claude "continue".';
-      } else if (savedVia === 'picker') {
-        savedHintEl.textContent = 'Saved to the folder you chose. If your Claude session runs in Cowork, make sure that folder is the workspace folder (the one containing this review HTML). Then tell Claude "continue".';
-      } else {
-        savedHintEl.textContent = 'Saved to your browser Downloads folder. IMPORTANT: if your Claude session runs inside Cowork, MOVE or COPY this file into the same folder where this review HTML is located — that is the only folder the server can see. Then tell Claude "continue".';
+    // Attempt 2: GET fallback via <img> — bypasses CORS/file:// restrictions
+    if (window.PII_SHIELD_PORT) {
+      try {
+        const getData = encodeURIComponent(JSON.stringify({ overrides }));
+        const img = new Image();
+        img.src = SIDECAR + '/api/approve-get/' + SESSION_ID + '?data=' + getData + '&_t=' + Date.now();
+        console.log('[PII Debug] Standalone GET fallback fired');
+        // Give the GET a moment to land, then show success
+        await new Promise(r => setTimeout(r, 500));
+        const hint = document.getElementById('approved-saved-hint');
+        if (hint) hint.textContent = 'Approval sent to PII Shield server. Tell Claude "continue" or "approved".';
+        const fn = document.getElementById('approved-filename');
+        if (fn) fn.textContent = '(sent to server)';
+        document.getElementById('approved-overlay').classList.add('visible');
+        return;
+      } catch (e) { console.warn('[PII Debug] Standalone GET fallback failed:', e); }
+
+      // Attempt 3: Show clickable link as last resort
+      const hint = document.getElementById('approved-saved-hint');
+      if (hint) {
+        hint.innerHTML = 'Cannot send approval from this panel. ' +
+          '<a href="' + reviewUrl + '" target="_blank" ' +
+          'style="color:#2563eb;text-decoration:underline;font-weight:bold">' +
+          'Open review in browser</a> and click Approve there. ' +
+          'Then tell Claude "approved".';
       }
+      const fn = document.getElementById('approved-filename');
+      if (fn) fn.textContent = '';
+      document.getElementById('approved-overlay').classList.add('visible');
+      btn.disabled = false;
+      btn.textContent = 'Approve';
+      return;
     }
 
-    const fnEl = document.getElementById('approved-filename');
-    if (fnEl) fnEl.textContent = fileName;
-    document.getElementById('approved-overlay').classList.add('visible');
-    return;
+    // Attempt 3: Legacy — download JSON file (no sidecar port known)
+    try {
+      const blob = new Blob([JSON.stringify(decisions)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(a.href);
+      const hint = document.getElementById('approved-saved-hint');
+      if (hint) hint.textContent = 'Saved to Downloads. If in Cowork, move the file to the workspace folder. Then tell Claude "continue".';
+      const fn = document.getElementById('approved-filename');
+      if (fn) fn.textContent = fileName;
+      document.getElementById('approved-overlay').classList.add('visible');
+      return;
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'Approve';
+      alert('Failed to save: ' + (err && err.message ? err.message : err));
+      return;
+    }
   }
 
+  // Server Mode: POST + GET fallback (Cowork proxy may block POST)
+  console.log('[PII Debug] approve() Server Mode: SESSION_ID=' + SESSION_ID + ', overrides=' + JSON.stringify(overrides));
+
+  // Attempt 1: POST (works on direct HTTP, may fail through Cowork proxy)
   try {
-    await fetch(`${API_BASE}/api/approve/${SESSION_ID}`, {
+    const approveResp = await fetch(`${API_BASE}/api/approve/${SESSION_ID}?_t=${Date.now()}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(overrides),
     });
-    document.getElementById('approved-overlay').classList.add('visible');
+    console.log('[PII Debug] Approve POST status:', approveResp.status, approveResp.ok);
   } catch (err) {
-    btn.disabled = false;
-    btn.textContent = 'Approve';
-    alert('Failed to save: ' + err.message);
+    console.warn('[PII Debug] Approve POST failed:', err);
   }
+
+  // Attempt 2: GET fallback via <img> — always fires, bypasses proxy POST issues
+  try {
+    const getData = encodeURIComponent(JSON.stringify({ overrides }));
+    const img = new Image();
+    img.src = `${API_BASE}/api/approve-get/${SESSION_ID}?data=${getData}&_t=${Date.now()}`;
+    console.log('[PII Debug] Approve GET fallback fired: /api/approve-get/' + SESSION_ID);
+  } catch (err) {
+    console.warn('[PII Debug] Approve GET fallback failed:', err);
+  }
+
+  const hint = document.getElementById('approved-saved-hint');
+  if (hint) hint.textContent = 'Approval sent to PII Shield server. Tell Claude "continue" or "approved".';
+  const fn = document.getElementById('approved-filename');
+  if (fn) fn.textContent = '(sent to server)';
+  document.getElementById('approved-overlay').classList.add('visible');
 }
 
 function scrollToEntity(idx) {

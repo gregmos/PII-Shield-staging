@@ -175,17 +175,34 @@ Load the appropriate reference file(s) based on the detected mode. Reference fil
 
 HITL review is **mandatory** after every `anonymize_file` call, unless the user has set `skip_review: true` in extension settings (Settings → Extensions → PII Shield). Check the `PII_SKIP_REVIEW` environment variable — if it equals `"true"`, skip the review step entirely.
 
-**When review is active** (default), first explain what will happen, then call `start_review(session_id)` — the review page opens automatically in the user's browser.
+**When review is active** (default), first explain what will happen, then call `start_review(session_id)` — the response includes `review_url` (live HTTP URL on localhost:6789) and a `user_message` you MUST relay verbatim.
 
 Tell the user BEFORE calling `start_review`:
 
-> "I've anonymized N entities in your document. I'm opening a review page in your browser — it runs entirely on your machine, no data is sent anywhere. You'll see color-coded highlights: click any to remove false positives, select text to add missed entities. Click **Approve** when done."
+> "I've anonymized N entities in your document. I'm opening a review page — it runs entirely on your machine, no data is sent anywhere. You'll see color-coded highlights: click any to remove false positives, select text to add missed entities. Click **Approve** when done."
 
-After `start_review` returns, ask via AskUserQuestion: **"I've opened the review page. Let me know when you're done."** with options: **"Done reviewing"** / **"Skip review"**.
+### Cowork: Browser link workflow
+
+In Cowork, `start_review` returns `review_url` (e.g. `http://127.0.0.1:6789/review/<session_id>`) and includes it in `user_message`. Cowork forwards VM ports to the host, so the user can open this link in their browser.
+
+1. Relay `user_message` from `start_review` verbatim — it contains the clickable review URL.
+2. The user opens the link in their browser → sees the review page with highlighted entities.
+3. The user clicks Approve → the browser POSTs to the sidecar → in-memory pickup is instant.
+4. Poll `get_review_status(session_id)` every ~15 s — it will see `approved: true` immediately after the user clicks Approve.
+
+**Do NOT use `preview_start`** — it is not available when MCP tools don't propagate.
+
+### Desktop: Browser workflow
+
+On desktop (non-Cowork), `start_review` auto-opens the `review_url` in the default browser. The Approve button POSTs to the sidecar for instant pickup. As fallback, it writes `review_<session_id>_decisions.json` to Downloads — `get_review_status` polls the filesystem.
+
+### After start_review returns
+
+Ask via AskUserQuestion: **"I've opened the review page. Let me know when you're done."** with options: **"Done reviewing"** / **"Skip review"**.
 
 **Read `references/hitl-review.md` for the full pipeline, polling logic, and important rules.** Key rule: if review produces changes, `anonymize_file(path, review_session_id=session_id)` returns ALL NEW values — you MUST discard old session_id, output_path, docx_output_path and use the new ones.
 
-**Cowork path rule (very important):** when calling `start_review`, you MUST pass `host_workspace_dir` = the `host_dir` field from your earlier `resolve_path(marker)` call. Without it, the user_message will display a `/sessions/<id>/mnt/...` VM path that the user cannot use, AND the server cannot tell the user where to drop the decisions JSON. In Cowork, the host's Downloads folder is NOT visible from the VM — the workspace folder is the only path shared between the user's browser and the server, so the user must move/copy the downloaded JSON into it after Approve.
+**Cowork path rule:** when calling `start_review`, pass `host_workspace_dir` = the `host_dir` field from your earlier `resolve_path(marker)` call. This is used for the static HTML fallback path and display purposes.
 
 ---
 

@@ -775,14 +775,11 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<string> {
 
     case "get_review_status": {
       const sessionId = (args.session_id as string) || latestSessionId() || "";
+      console.error(`[get_review_status] sessionId=${sessionId}, args.session_id=${args.session_id}, latestSessionId()=${latestSessionId()}`);
 
       // Check for standalone decisions file (from self-contained HTML review).
-      // The review UI writes `review_<sid>_decisions.json` via `<a download>`
-      // into the user's browser Downloads folder — NOT into the per-session
-      // output_dir. So we must probe the same candidate list that
-      // apply_review_decisions Mode 2 uses: output_dir (for apps that persist
-      // the file there), ~/Downloads, ~, cwd, cwd/Downloads.
       const reviewData = getReview(sessionId);
+      console.error(`[get_review_status] reviewData found=${!!reviewData}, approved=${reviewData?.approved}`);
       if (reviewData && !reviewData.approved) {
         const fname = `review_${sessionId}_decisions.json`;
         const outDir = (reviewData as any).output_dir || process.cwd();
@@ -813,10 +810,39 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<string> {
         }
       }
 
+      // Direct disk check — bypasses in-memory Map entirely
+      let diskApproved: boolean | null = null;
+      let diskPath = "";
+      try {
+        diskPath = path.join(PATHS.MAPPINGS_DIR, `review_${sessionId}.json`);
+        if (fs.existsSync(diskPath)) {
+          const diskData = JSON.parse(fs.readFileSync(diskPath, "utf-8"));
+          diskApproved = !!diskData.approved;
+          // If disk says approved but memory says no — sync memory from disk
+          if (diskData.approved && reviewData && !reviewData.approved) {
+            reviewData.approved = true;
+            reviewData.overrides = diskData.overrides || reviewData.overrides;
+            saveReview(sessionId, reviewData);
+          }
+        }
+      } catch { /* ignore */ }
+
       const status = getReviewStatus(sessionId);
+      console.error(`[get_review_status] RESULT: status=${status.status}, has_changes=${status.has_changes}, diskApproved=${diskApproved}`);
       return JSON.stringify({
         session_id: sessionId,
         ...status,
+        _debug: {
+          resolved_session_id: sessionId,
+          args_session_id: args.session_id || null,
+          latest_session_id: latestSessionId(),
+          review_found: !!reviewData,
+          review_approved: reviewData?.approved ?? null,
+          review_has_overrides: !!(reviewData?.overrides),
+          disk_review_path: diskPath,
+          disk_approved: diskApproved,
+          pid: process.pid,
+        },
       }, null, 2);
     }
 
@@ -1150,57 +1176,83 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<string> {
       }
 
       const inCowork = isCowork();
-      const saveHint = inCowork
-        ? `When you click **Approve**, your browser will open a **Save As** dialog (Chrome / Edge) — ` +
-          `**navigate to the same folder where this review HTML lives** (\`${generated[0].workspace_dir_display}\`) and save the JSON there. ` +
-          `That folder is the only path my server can see from inside Cowork. ` +
-          `If your browser skips the dialog and drops the file straight into Downloads, just **move it** from Downloads into the workspace folder — same result.`
-        : `When you click **Approve**, a file called \`review_${generated[0].session_id}_decisions.json\` ` +
-          `will either open a Save As dialog (Chrome / Edge) or drop into your browser's Downloads folder. Either is fine — my server will find it automatically.`;
+      // HTTP sidecar review URL — works in both Cowork (port forwarded to host) and desktop
+      const httpPort = parseInt(process.env.PII_SHIELD_HTTP_PORT || "6789", 10);
+
+      const reviewUrls = generated.map((g) => ({
+        session_id: g.session_id,
+        review_url: `http://127.0.0.1:${httpPort}/review/${g.session_id}`,
+      }));
 
       let userMessage: string;
-      if (generated.length === 1) {
-        const g = generated[0];
-        const locationHint = inCowork
-          ? `Find it in the **Cowork file panel** on the right (folder \`${g.workspace_dir_display}\`), ` +
-            `then **download or open it from there** in Chrome / Edge. ` +
-            `Or open the same folder on your host machine and double-click the HTML.`
-          : `Open it in your browser (double-click it, or File → Open).`;
-        userMessage =
-          `I've saved an interactive review page for **${g.source_filename}** at:\n\n` +
-          `\`${g.review_file_display}\`\n\n` +
-          `${locationHint}\n\n` +
-          `It runs 100% locally — nothing leaves your machine. You'll see your document with color-coded PII highlights: ` +
-          `click any highlight to remove a false positive, select text to add a missed entity, then click **Approve** at the top.\n\n` +
-          `${saveHint}\n\n` +
-          `Then tell me **"approved"** or **"continue"** and I'll re-anonymize with your decisions.\n\n` +
-          `⚠️ **I will NOT read your document until you approve the review.**`;
+      if (inCowork) {
+        // Cowork: give user a clickable link. Cowork forwards VM ports to
+        // host, so 127.0.0.1:6789 opens in the user's browser. Server Mode
+        // approve POSTs to the sidecar → in-memory pickup is instant.
+        if (generated.length === 1) {
+          const g = generated[0];
+          userMessage =
+            `Review page is ready for **${g.source_filename}**.\n\n` +
+            `**Open this link to review:** ${reviewUrls[0].review_url}\n\n` +
+            `You'll see color-coded PII highlights: ` +
+            `click any highlight to remove a false positive, select text to add a missed entity, then click **Approve** at the top.\n\n` +
+            `Everything runs locally — nothing leaves your machine. After you approve, tell me **"approved"** or **"continue"** and I'll re-anonymize with your decisions.\n\n` +
+            `⚠️ **I will NOT read your document until you approve the review.**`;
+        } else {
+          const lines = generated
+            .map((g, i) => `${i + 1}. **${g.source_filename}** → ${reviewUrls[i].review_url}`)
+            .join("\n");
+          userMessage =
+            `${generated.length} review pages are ready:\n\n${lines}\n\n` +
+            `Open each link, review the highlights and click **Approve**.\n\n` +
+            `When **all ${generated.length}** are approved, tell me **"all approved"** and I'll re-anonymize each document.\n\n` +
+            `⚠️ **I will NOT read any of your documents until its review is approved.**`;
+        }
       } else {
-        const lines = generated
-          .map((g, i) => `${i + 1}. **${g.source_filename}** → \`${g.review_file_display}\`  (session \`${g.session_id}\`)`)
-          .join("\n");
-        const locationHint = inCowork
-          ? `Find each HTML in the **Cowork file panel** on the right and open it in Chrome / Edge (or open them from your host machine).`
-          : `Open each HTML in your browser.`;
-        userMessage =
-          `I've saved ${generated.length} interactive review pages, one per document:\n\n` +
-          `${lines}\n\n` +
-          `${locationHint} Review the highlights and click **Approve** on each.\n\n` +
-          `${saveHint}\n\n` +
-          `When **all ${generated.length}** are approved, tell me **"all approved"** and I'll re-anonymize each document with its own overrides.\n\n` +
-          `⚠️ **I will NOT read any of your documents until its review is approved.**`;
+        // Desktop: open in default browser
+        const saveHint =
+          `When you click **Approve**, a file called \`review_${generated[0].session_id}_decisions.json\` ` +
+          `will either open a Save As dialog (Chrome / Edge) or drop into your browser's Downloads folder. Either is fine — my server will find it automatically.`;
+        if (generated.length === 1) {
+          const g = generated[0];
+          userMessage =
+            `Review page is ready for **${g.source_filename}**.\n\n` +
+            `Opening it in your browser now. You'll see color-coded PII highlights: ` +
+            `click any highlight to remove a false positive, select text to add a missed entity, then click **Approve** at the top.\n\n` +
+            `It runs 100% locally — nothing leaves your machine.\n\n` +
+            `${saveHint}\n\n` +
+            `Then tell me **"approved"** or **"continue"** and I'll re-anonymize with your decisions.\n\n` +
+            `⚠️ **I will NOT read your document until you approve the review.**`;
+        } else {
+          const lines = generated
+            .map((g, i) => `${i + 1}. **${g.source_filename}** → \`${reviewUrls[i].review_url}\`  (session \`${g.session_id}\`)`)
+            .join("\n");
+          userMessage =
+            `${generated.length} review pages are ready:\n\n${lines}\n\n` +
+            `Opening the first one in your browser. Review the highlights and click **Approve** on each.\n\n` +
+            `${saveHint}\n\n` +
+            `When **all ${generated.length}** are approved, tell me **"all approved"** and I'll re-anonymize each document.\n\n` +
+            `⚠️ **I will NOT read any of your documents until its review is approved.**`;
+        }
+        // Desktop: auto-open the first review URL in the browser
+        try {
+          const { openBrowser } = await import("./review/review-server.js");
+          openBrowser(reviewUrls[0].review_url);
+        } catch { /* best effort */ }
       }
 
       return JSON.stringify({
         status: "review_ready",
         session_id: generated[0].session_id,
+        review_url: reviewUrls[0].review_url,
+        review_urls: reviewUrls,
         review_file: generated[0].review_file,
         review_file_display: generated[0].review_file_display,
         workspace_dir: generated[0].workspace_dir,
         workspace_dir_display: generated[0].workspace_dir_display,
         review_files: generated,
         count: generated.length,
-        cowork: isCowork(),
+        cowork: inCowork,
         user_message: userMessage,
       }, null, 2);
     }
@@ -1777,66 +1829,137 @@ async function main() {
   earlyLog("[main] server connected, tools=" + TOOLS.length);
   console.error(`[PII Shield v${VERSION}] MCP server running on stdio, ${TOOLS.length} tools registered.`);
 
-  // ── HTTP sidecar — Cowork fallback when MCP tool propagation fails ──────
-  // The server is already running (stdio), but Cowork sometimes doesn't
-  // propagate tool schemas to Claude's callable list. This HTTP endpoint
-  // lets SKILL.md Step 0 Attempt C reach the same handlers via curl.
+  // ── HTTP sidecar — MCP tool fallback + HITL review UI ──────────────────
+  // Serves two purposes:
+  // 1. JSON-RPC endpoint at POST /mcp for when MCP tool propagation fails
+  // 2. Review UI routes (GET /review/:sid, POST /api/approve/:sid, etc.)
+  //    so Cowork preview panel can show an interactive HITL review page
   const HTTP_PORT = parseInt(process.env.PII_SHIELD_HTTP_PORT || "6789", 10);
   try {
     const http = await import("node:http");
+    const {
+      serveReviewPage, serveReviewData, handleApprove, handleApproveGet,
+      handleRemoveEntity, handleAddEntity, readBody, sendJson,
+    } = await import("./review/review-server.js");
+
     const httpServer = http.createServer(async (req, res) => {
-      // Only accept POST /mcp
-      if (req.method !== "POST" || req.url !== "/mcp") {
-        res.writeHead(404, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Not found" }));
-        return;
-      }
-      // Read body
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) chunks.push(chunk as Buffer);
-      const body = Buffer.concat(chunks).toString("utf-8");
+      const urlPath = (req.url || "/").split("?")[0];
 
-      let jsonrpc: any;
-      try { jsonrpc = JSON.parse(body); }
-      catch {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }));
+      // ── CORS (needed for review UI served from file:// or preview panel)
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      // Prevent browser caching — sidecar responses must always be fresh
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+      res.setHeader("Pragma", "no-cache");
+
+      if (req.method === "OPTIONS") {
+        res.writeHead(204);
+        res.end();
         return;
       }
 
-      const id = jsonrpc.id ?? null;
-      const method = jsonrpc.method as string;
-
-      try {
-        if (method === "tools/list") {
-          const tools = TOOLS.map((t: any) => ({
-            name: t.name, description: t.description, inputSchema: t.inputSchema,
-          }));
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ jsonrpc: "2.0", id, result: { tools } }));
-        } else if (method === "tools/call") {
-          const { name, arguments: args } = jsonrpc.params || {};
-          const toolArgs = (args as ToolArgs) || {};
-          logToolCall(name, toolArgs);
-          const text = await handleToolCall(name, toolArgs);
-          logToolResponse(name, text);
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } }));
-        } else {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32601, message: `Unknown method: ${method}` } }));
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logToolError(method, err instanceof Error ? err : new Error(msg));
+      // ── Version endpoint (diagnostic) ────────────────────────────────
+      if (req.method === "GET" && urlPath === "/version") {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32603, message: msg } }));
+        res.end(JSON.stringify({ version: "2.1", build: "2026-04-09", pid: process.pid }));
+        return;
       }
+
+      // ── Review UI routes ─────────────────────────────────────────────
+      if (req.method === "GET" && urlPath.startsWith("/review/")) {
+        const sid = urlPath.split("/review/")[1];
+        // Cache-buster redirect: if no _t= param, redirect to add one.
+        // This forces the browser to request a fresh URL even if the old
+        // response (without Cache-Control headers) is in disk cache.
+        if (!(req.url || "").includes("_t=")) {
+          res.writeHead(302, { "Location": `/review/${sid}?_t=${Date.now()}`, "Cache-Control": "no-store" });
+          res.end();
+          return;
+        }
+        serveReviewPage(sid, res);
+        return;
+      }
+      if (req.method === "GET" && urlPath.startsWith("/api/review/")) {
+        const sid = urlPath.split("/api/review/")[1];
+        serveReviewData(sid, res);
+        return;
+      }
+      if (req.method === "GET" && urlPath.startsWith("/api/approve-get/")) {
+        const sid = urlPath.split("/api/approve-get/")[1];
+        const queryStr = (req.url || "").split("?")[1] || "";
+        handleApproveGet(sid, queryStr, res);
+        return;
+      }
+      if (req.method === "POST" && urlPath.startsWith("/api/approve/")) {
+        const sid = urlPath.split("/api/approve/")[1];
+        readBody(req, (body) => handleApprove(sid, body, res));
+        return;
+      }
+      if (req.method === "POST" && urlPath.startsWith("/api/remove_entity/")) {
+        const sid = urlPath.split("/api/remove_entity/")[1];
+        readBody(req, (body) => handleRemoveEntity(sid, body, res));
+        return;
+      }
+      if (req.method === "POST" && urlPath.startsWith("/api/add_entity/")) {
+        const sid = urlPath.split("/api/add_entity/")[1];
+        readBody(req, (body) => handleAddEntity(sid, body, res));
+        return;
+      }
+
+      // ── JSON-RPC MCP endpoint ────────────────────────────────────────
+      if (req.method === "POST" && urlPath === "/mcp") {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(chunk as Buffer);
+        const rawBody = Buffer.concat(chunks).toString("utf-8");
+
+        let jsonrpc: any;
+        try { jsonrpc = JSON.parse(rawBody); }
+        catch {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }));
+          return;
+        }
+
+        const id = jsonrpc.id ?? null;
+        const method = jsonrpc.method as string;
+
+        try {
+          if (method === "tools/list") {
+            const tools = TOOLS.map((t: any) => ({
+              name: t.name, description: t.description, inputSchema: t.inputSchema,
+            }));
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ jsonrpc: "2.0", id, result: { tools } }));
+          } else if (method === "tools/call") {
+            const { name, arguments: args } = jsonrpc.params || {};
+            const toolArgs = (args as ToolArgs) || {};
+            logToolCall(name, toolArgs);
+            const text = await handleToolCall(name, toolArgs);
+            logToolResponse(name, text);
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }] } }));
+          } else {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32601, message: `Unknown method: ${method}` } }));
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logToolError(method, err instanceof Error ? err : new Error(msg));
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32603, message: msg } }));
+        }
+        return;
+      }
+
+      // ── 404 ──────────────────────────────────────────────────────────
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Not found" }));
     });
 
     httpServer.listen(HTTP_PORT, "127.0.0.1", () => {
       earlyLog(`[main] HTTP sidecar listening on 127.0.0.1:${HTTP_PORT}`);
-      console.error(`[PII Shield] HTTP sidecar on 127.0.0.1:${HTTP_PORT}/mcp`);
+      console.error(`[PII Shield] HTTP sidecar on 127.0.0.1:${HTTP_PORT} (MCP + Review UI)`);
     });
     httpServer.on("error", (e: any) => {
       earlyLog(`[main] HTTP sidecar failed: ${e.message}`);

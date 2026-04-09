@@ -20,12 +20,22 @@ let _server: http.Server | null = null;
 let _port: number = ENV.PII_REVIEW_PORT;
 
 /** Get review_ui.html content: embedded string first, then disk fallback */
+/** Log to both audit file (same as NER logs) and stderr */
+function reviewLog(msg: string): void {
+  const full = `[Review] ${msg}`;
+  try { (globalThis as any).__earlyLog?.(full); } catch { /* ignore */ }
+  console.error(full);
+}
+
 function getReviewHtmlContent(): string {
   // Primary: embedded in bundle by esbuild (loader: { ".html": "text" })
+  reviewLog(`EMBEDDED_REVIEW_HTML check: type=${typeof EMBEDDED_REVIEW_HTML}, len=${typeof EMBEDDED_REVIEW_HTML === "string" ? EMBEDDED_REVIEW_HTML.length : "N/A"}`);
   if (typeof EMBEDDED_REVIEW_HTML === "string" && EMBEDDED_REVIEW_HTML.length > 100) {
+    reviewLog(`Serving embedded HTML (${EMBEDDED_REVIEW_HTML.length} chars)`);
     return EMBEDDED_REVIEW_HTML;
   }
   // Fallback: read from disk (dev mode / unbundled)
+  reviewLog("EMBEDDED not available, trying disk fallback...");
   const candidates = [
     path.join(process.cwd(), "assets", "review_ui.html"),
     path.join(process.cwd(), "server", "review_ui.html"),
@@ -34,13 +44,16 @@ function getReviewHtmlContent(): string {
   ];
   for (const p of candidates) {
     try {
-      if (fs.existsSync(p)) return fs.readFileSync(p, "utf-8");
+      if (fs.existsSync(p)) {
+        reviewLog(`Disk fallback HIT: ${p} (${fs.statSync(p).size} bytes)`);
+        return fs.readFileSync(p, "utf-8");
+      }
     } catch { /* next */ }
   }
   throw new Error("review_ui.html not found");
 }
 
-function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
+export function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
   const urlPath = (req.url || "/").split("?")[0];
 
   // CORS headers
@@ -75,19 +88,20 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
   }
 }
 
-function readBody(req: http.IncomingMessage, cb: (body: string) => void): void {
+export function readBody(req: http.IncomingMessage, cb: (body: string) => void): void {
   const chunks: Buffer[] = [];
   req.on("data", (chunk) => chunks.push(chunk));
   req.on("end", () => cb(Buffer.concat(chunks).toString("utf-8")));
 }
 
-function sendJson(res: http.ServerResponse, data: unknown, status = 200): void {
+export function sendJson(res: http.ServerResponse, data: unknown, status = 200): void {
   const body = JSON.stringify(data);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(body);
 }
 
-function serveReviewPage(sessionId: string, res: http.ServerResponse): void {
+export function serveReviewPage(sessionId: string, res: http.ServerResponse): void {
+  reviewLog(`serveReviewPage called for session=${sessionId}`);
   const review = getReview(sessionId);
   if (!review) {
     res.writeHead(200, { "Content-Type": "text/html" });
@@ -95,34 +109,49 @@ function serveReviewPage(sessionId: string, res: http.ServerResponse): void {
     return;
   }
   try {
-    const html = getReviewHtmlContent();
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    let html = getReviewHtmlContent();
+    reviewLog(`Serving HTML (${html.length} chars), has_v2.1=${html.includes("v2.1")}, has_split=${html.includes("split-btn")}`);
+    // Server-side version injection — proves the NEW server served this page
+    const versionTag = `<script>console.log("[PII-SERVER] v2.1 served at ${new Date().toISOString()}, session=${sessionId}");document.title="PII Shield Review v2.1";</script>`;
+    html = html.replace("<head>", `<head>\n${versionTag}`);
+    res.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store, no-cache, must-revalidate",
+      "Pragma": "no-cache",
+      "X-PII-Version": "2.1",
+    });
     res.end(html);
-  } catch {
+  } catch (e) {
+    reviewLog(`getReviewHtmlContent FAILED: ${e}`);
     res.writeHead(500, { "Content-Type": "text/html" });
     res.end("<h1>review_ui.html not found</h1>");
   }
 }
 
-function serveReviewData(sessionId: string, res: http.ServerResponse): void {
+export function serveReviewData(sessionId: string, res: http.ServerResponse): void {
   const review = getReview(sessionId);
   if (!review) {
     sendJson(res, { error: `Review session not found: ${sessionId}` }, 404);
     return;
   }
+  console.error(`[Review API] GET /api/review/${sessionId}: entities=${(review.entities || []).length}, text_len=${(review.original_text || "").length}, has_html=${!!(review.html_text)}`);
   sendJson(res, {
     session_id: sessionId,
     original_text: review.original_text || "",
     entities: review.entities || [],
-    html_text: review.html_text || "",
+    // Match the field name the UI expects (original_html, not html_text)
+    original_html: review.html_text || "",
+    anonymized_text: review.anonymized_text || "",
     approved: review.approved || false,
     overrides: review.overrides || { remove: [], add: [] },
   });
 }
 
-function handleApprove(sessionId: string, body: string, res: http.ServerResponse): void {
+export function handleApprove(sessionId: string, body: string, res: http.ServerResponse): void {
+  reviewLog(`handleApprove called for session=${sessionId}, body_len=${body.length}`);
   const review = getReview(sessionId);
   if (!review) {
+    reviewLog(`handleApprove: session ${sessionId} NOT FOUND`);
     sendJson(res, { error: "Session not found" }, 404);
     return;
   }
@@ -134,10 +163,42 @@ function handleApprove(sessionId: string, body: string, res: http.ServerResponse
   };
   review.approved = true;
   saveReview(sessionId, review);
+  reviewLog(`handleApprove: session ${sessionId} APPROVED (remove=${review.overrides.remove.length}, add=${review.overrides.add.length})`);
   sendJson(res, { status: "approved", session_id: sessionId });
 }
 
-function handleRemoveEntity(sessionId: string, body: string, res: http.ServerResponse): void {
+/**
+ * GET-based approve handler for fire-and-forget from cross-origin contexts
+ * (e.g. file:// iframe in Cowork). Returns a 1x1 transparent GIF so <img>
+ * tag completes without error. Overrides arrive as ?data=JSON query param.
+ */
+export function handleApproveGet(sessionId: string, query: string, res: http.ServerResponse): void {
+  reviewLog(`handleApproveGet called for session=${sessionId}, query_len=${query.length}`);
+  const params = new URLSearchParams(query);
+  const dataStr = params.get("data") || params.get("overrides") || "{}";
+  let parsed: any = {};
+  try { parsed = JSON.parse(dataStr); } catch { /* empty */ }
+  const overrides = parsed.overrides || { remove: parsed.remove || [], add: parsed.add || [] };
+
+  const review = getReview(sessionId);
+  if (!review) {
+    reviewLog(`handleApproveGet: session ${sessionId} NOT FOUND`);
+    res.writeHead(404, { "Content-Type": "image/gif" });
+    res.end();
+    return;
+  }
+  review.overrides = { remove: overrides.remove || [], add: overrides.add || [] };
+  review.approved = true;
+  saveReview(sessionId, review);
+  reviewLog(`handleApproveGet: session ${sessionId} APPROVED via GET (remove=${review.overrides.remove.length}, add=${review.overrides.add.length})`);
+
+  // 1x1 transparent GIF
+  const pixel = Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64");
+  res.writeHead(200, { "Content-Type": "image/gif", "Content-Length": String(pixel.length) });
+  res.end(pixel);
+}
+
+export function handleRemoveEntity(sessionId: string, body: string, res: http.ServerResponse): void {
   const review = getReview(sessionId);
   if (!review) { sendJson(res, { error: "Session not found" }, 404); return; }
   try {
@@ -154,7 +215,7 @@ function handleRemoveEntity(sessionId: string, body: string, res: http.ServerRes
   sendJson(res, { ok: true, overrides: review.overrides });
 }
 
-function handleAddEntity(sessionId: string, body: string, res: http.ServerResponse): void {
+export function handleAddEntity(sessionId: string, body: string, res: http.ServerResponse): void {
   const review = getReview(sessionId);
   if (!review) { sendJson(res, { error: "Session not found" }, 404); return; }
   try {
@@ -249,11 +310,13 @@ export function generateReviewHtml(sessionId: string, outputDir: string): string
   // handler can target it directly via showDirectoryPicker / showSaveFilePicker.
   // In Cowork the VM-side server can ONLY see this folder via the VirtioFS
   // mount, so dropping the JSON anywhere else (e.g. host Downloads) is invisible.
+  const sidecarPort = parseInt(process.env.PII_SHIELD_HTTP_PORT || "6789", 10);
   const injection = `
 <script>
 window.STANDALONE_MODE = true;
 window.REVIEW_DATA = ${JSON.stringify(reviewPayload)};
 window.WORKSPACE_DIR = ${JSON.stringify(outputDir)};
+window.PII_SHIELD_PORT = "${sidecarPort}";
 </script>`;
 
   const html = template.replace("</head>", `${injection}\n</head>`);
