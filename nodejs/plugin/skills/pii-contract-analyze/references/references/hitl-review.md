@@ -18,7 +18,6 @@ HITL review is **mandatory** after every `anonymize_file` call (unless `PII_SKIP
      - `review_url` — primary review URL. For bulk mode, this is the bulk page with document tabs.
      - `bulk_review_url` — bulk page URL (null for single document).
      - `review_urls` — array of `{session_id, review_url}` (individual per-session URLs).
-     - `standalone_files` — (Cowork only) self-contained HTML files as fallback if HTTP URL fails.
      - `workspace_dir` / `workspace_dir_display` — VM-form / host-form workspace folder.
      - `cowork: true|false` — whether inside a Cowork VM.
      - `review_files` — array (one entry per session).
@@ -60,7 +59,7 @@ HITL review is **mandatory** after every `anonymize_file` call (unless `PII_SKIP
 - **NEVER** read, log, or forward the contents of the decisions JSON. You do not need to; the server applies it.
 - **NEVER** pass `entity_overrides` as an inline parameter — always use `review_session_id` so the server handles overrides internally.
 - **NEVER** try to find missed PII yourself by reading the source file — that defeats anonymization.
-- The primary review path uses the live HTTP sidecar (localhost:6789). A standalone HTML file is also generated as fallback. Both run 100% locally — no data is sent anywhere.
+- The review runs via the live HTTP sidecar (localhost:6789), 100% locally — no data is sent anywhere.
 - After HITL, if changes were made, you MUST use the NEW `session_id` / `output_path` / `docx_output_path` for every downstream step. The old values are dead.
 - Keep the original source `file_path` around — you need it for the re-anonymize call.
 

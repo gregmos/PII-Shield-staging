@@ -585,33 +585,23 @@ function isBulkMode() {
 }
 
 async function initBulk(sessionIds) {
-  console.log('[PII Debug] initBulk: loading', sessionIds.length, 'sessions, standalone=', !!window.STANDALONE_MODE);
+  console.log('[PII Debug] initBulk: loading', sessionIds.length, 'sessions');
 
-  // Standalone bulk: session metadata embedded by generateReviewBulkHtml()
-  if (window.STANDALONE_MODE && window.BULK_SESSIONS_META) {
-    bulkSessions = window.BULK_SESSIONS_META.map((s) => ({
+  // Fetch metadata from API
+  try {
+    const resp = await fetch(`${API_BASE}/api/sessions?ids=${sessionIds.join(",")}&_t=${Date.now()}`);
+    const data = await resp.json();
+    bulkSessions = (data.sessions || []).map((s) => ({
       session_id: s.session_id,
       source_filename: s.source_filename || s.session_id,
       approved: s.approved || false,
       entity_count: s.entity_count || 0,
     }));
-  } else {
-    // Server mode: fetch metadata from API
-    try {
-      const resp = await fetch(`${API_BASE}/api/sessions?ids=${sessionIds.join(",")}&_t=${Date.now()}`);
-      const data = await resp.json();
-      bulkSessions = (data.sessions || []).map((s) => ({
-        session_id: s.session_id,
-        source_filename: s.source_filename || s.session_id,
-        approved: s.approved || false,
-        entity_count: s.entity_count || 0,
-      }));
-    } catch (err) {
-      console.error('[PII Debug] initBulk fetch failed:', err);
-      bulkSessions = sessionIds.map((sid) => ({
-        session_id: sid, source_filename: sid, approved: false, entity_count: 0,
-      }));
-    }
+  } catch (err) {
+    console.error('[PII Debug] initBulk fetch failed:', err);
+    bulkSessions = sessionIds.map((sid) => ({
+      session_id: sid, source_filename: sid, approved: false, entity_count: 0,
+    }));
   }
   currentBulkIdx = 0;
   renderDocTabs();
@@ -682,15 +672,9 @@ async function loadBulkDocument(idx) {
 
   try {
     let data;
-    // Standalone bulk: review data embedded by generateReviewBulkHtml()
-    if (window.STANDALONE_MODE && window.BULK_REVIEW_DATA && window.BULK_REVIEW_DATA[SESSION_ID]) {
-      data = window.BULK_REVIEW_DATA[SESSION_ID];
-      console.log('[PII Debug] loadBulkDocument: using embedded data for', SESSION_ID);
-    } else {
-      // Server mode: fetch from API
-      const resp = await fetch(`${API_BASE}/api/review/${SESSION_ID}?_t=${Date.now()}`);
-      data = await resp.json();
-    }
+    // Fetch from API
+    const resp = await fetch(`${API_BASE}/api/review/${SESSION_ID}?_t=${Date.now()}`);
+    data = await resp.json();
     if (data.error) {
       document.getElementById('doc-content').textContent = data.error;
       return;
@@ -753,9 +737,9 @@ function showBulkCompleteOverlay() {
 }
 
 async function init() {
-  console.log('[PII Debug] review_ui.html v2.1 — init() started, STANDALONE_MODE=', !!window.STANDALONE_MODE);
+  console.log('[PII Debug] review_ui.html v2.1 — init() started');
 
-  // Bulk mode check FIRST (before standalone single) — bulk can also be standalone
+  // Bulk mode check
   const urlParams = new URLSearchParams(window.location.search);
   const bulkFromUrl = urlParams.get('sessions');
   const bulkSessionIds = window.BULK_SESSIONS
@@ -767,22 +751,7 @@ async function init() {
     return;
   }
 
-  // Standalone single mode: data is embedded in the HTML by generateReviewHtml()
-  if (window.STANDALONE_MODE && window.REVIEW_DATA) {
-    const data = window.REVIEW_DATA;
-    SESSION_ID = data.session_id || 'standalone';
-    originalText = data.original_text || '';
-    originalHtml = data.original_html || '';
-    anonymizedText = data.anonymized_text || '';
-    entities = (data.entities || []).map((e, i) => ({ ...e, idx: i, verified: true }));
-    console.log('[PII Debug] Standalone: entities=' + entities.length + ', text_len=' + originalText.length);
-    if (originalHtml) parseHtmlFormatting(originalHtml);
-    if (!anonymizedText) document.getElementById('split-btn').style.display = 'none';
-    render();
-    return;
-  }
-
-  // Server mode (single document): fetch from API
+  // Single document: fetch from API
   const parts = window.location.pathname.split('/review/');
   SESSION_ID = parts[1] || '';
   if (!SESSION_ID) { document.getElementById('doc-content').textContent = 'No session ID'; return; }
@@ -1429,85 +1398,7 @@ async function approve() {
     add: addedEntities.map(e => ({ text: e.text, type: e.type, start: e.start, end: e.end })),
   };
 
-  if (window.STANDALONE_MODE) {
-    // Standalone mode approve: try HTTP POST to sidecar first, then show
-    // a clickable link to the review URL as fallback.
-    const SIDECAR = 'http://127.0.0.1:' + (window.PII_SHIELD_PORT || '6789');
-    const reviewUrl = SIDECAR + '/review/' + SESSION_ID;
-    const fileName = `review_${SESSION_ID}_decisions.json`;
-    const decisions = { session_id: SESSION_ID, approved: true, overrides, timestamp: Date.now() };
-
-    console.log('[PII Debug] approve() Standalone Mode: SESSION_ID=' + SESSION_ID);
-
-    // Attempt 1: fetch POST to sidecar (works if loaded via HTTP, not from file://)
-    try {
-      const r = await fetch(SIDECAR + '/api/approve/' + SESSION_ID + '?_t=' + Date.now(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(overrides),
-      });
-      console.log('[PII Debug] Standalone POST status:', r.status, r.ok);
-      if (r.ok) {
-        const hint = document.getElementById('approved-saved-hint');
-        if (hint) hint.textContent = 'Approval sent to PII Shield. Tell Claude "continue" or "approved".';
-        document.getElementById('approved-overlay').classList.add('visible');
-        return;
-      }
-    } catch (e) { console.warn('[PII Debug] Standalone POST failed:', e); }
-
-    // Attempt 2: GET fallback via <img> — bypasses CORS/file:// restrictions
-    if (window.PII_SHIELD_PORT) {
-      try {
-        const getData = encodeURIComponent(JSON.stringify({ overrides }));
-        const img = new Image();
-        img.src = SIDECAR + '/api/approve-get/' + SESSION_ID + '?data=' + getData + '&_t=' + Date.now();
-        console.log('[PII Debug] Standalone GET fallback fired');
-        // Give the GET a moment to land, then show success
-        await new Promise(r => setTimeout(r, 500));
-        const hint = document.getElementById('approved-saved-hint');
-        if (hint) hint.textContent = 'Approval sent to PII Shield. Tell Claude "continue" or "approved".';
-        document.getElementById('approved-overlay').classList.add('visible');
-        return;
-      } catch (e) { console.warn('[PII Debug] Standalone GET fallback failed:', e); }
-
-      // Attempt 3: Show clickable link as last resort
-      const hint = document.getElementById('approved-saved-hint');
-      if (hint) {
-        hint.innerHTML = 'Cannot send approval from this panel. ' +
-          '<a href="' + reviewUrl + '" target="_blank" ' +
-          'style="color:#2563eb;text-decoration:underline;font-weight:bold">' +
-          'Open review in browser</a> and click Approve there. ' +
-          'Then tell Claude "approved".';
-      }
-      document.getElementById('approved-overlay').classList.add('visible');
-      btn.disabled = false;
-      btn.textContent = 'Approve';
-      return;
-    }
-
-    // Attempt 3: Legacy — download JSON file (no sidecar port known)
-    try {
-      const blob = new Blob([JSON.stringify(decisions)], { type: 'application/json' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(a.href);
-      const hint = document.getElementById('approved-saved-hint');
-      if (hint) hint.textContent = 'Saved to Downloads. If in Cowork, move the file to the workspace folder. Then tell Claude "continue".';
-      document.getElementById('approved-overlay').classList.add('visible');
-      return;
-    } catch (err) {
-      btn.disabled = false;
-      btn.textContent = 'Approve';
-      alert('Failed to save: ' + (err && err.message ? err.message : err));
-      return;
-    }
-  }
-
-  // Server Mode: POST + GET fallback (Cowork proxy may block POST)
+  // POST + GET fallback (Cowork proxy may block POST)
   console.log('[PII Debug] approve() Server Mode: SESSION_ID=' + SESSION_ID + ', overrides=' + JSON.stringify(overrides));
 
   // Attempt 1: POST (works on direct HTTP, may fail through Cowork proxy)

@@ -31,7 +31,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
-import { startReviewServer, openBrowser, generateReviewHtml, generateReviewBulkHtml } from "./review/review-server.js";
+import { startReviewServer, openBrowser } from "./review/review-server.js";
 import { resolvePath as resolvePathFn, findFile as findFileFn } from "./path-resolution/path-resolver.js";
 import { anonymizeDocx, anonymizeDocxWithMapping } from "./docx/docx-anonymizer.js";
 import { deanonymizeDocx } from "./docx/docx-deanonymizer.js";
@@ -1197,25 +1197,6 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<string> {
       const httpPort = parseInt(process.env.PII_SHIELD_HTTP_PORT || "6789", 10);
       const isBulk = generated.length > 1;
 
-      // In Cowork, generate standalone HTML as fallback
-      const standaloneFiles: Array<{ session_id: string; html_path: string }> = [];
-      if (inCowork) {
-        const outputDir = generated[0].workspace_dir;
-        if (isBulk) {
-          const htmlPath = generateReviewBulkHtml(effectiveSessionIds, outputDir);
-          if (htmlPath) {
-            standaloneFiles.push({ session_id: "bulk", html_path: htmlPath });
-            logServer(`[Review] Standalone BULK HTML generated: ${htmlPath}`);
-          }
-        } else {
-          const htmlPath = generateReviewHtml(generated[0].session_id, outputDir);
-          if (htmlPath) {
-            standaloneFiles.push({ session_id: generated[0].session_id, html_path: htmlPath });
-            logServer(`[Review] Standalone HTML generated: ${htmlPath}`);
-          }
-        }
-      }
-
       // Per-session review URLs
       const reviewUrls = generated.map((g) => ({
         session_id: g.session_id,
@@ -1230,10 +1211,6 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<string> {
 
       let userMessage: string;
       if (inCowork) {
-        const fallbackHint = standaloneFiles.length > 0
-          ? `\n\n💡 **If the link doesn't open**, use the standalone HTML file(s) in your workspace:\n` +
-            standaloneFiles.map((f) => `- \`${path.basename(f.html_path)}\``).join("\n")
-          : "";
         if (isBulk) {
           const fileList = generated.map((g, i) => `${i + 1}. **${g.source_filename}**`).join("\n");
           userMessage =
@@ -1241,8 +1218,7 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<string> {
             `**Open this link to review all documents:** ${primaryReviewUrl}\n\n` +
             `You'll see document tabs at the top — review each one and click **Approve**. ` +
             `After approving one document, the next one opens automatically.\n\n` +
-            `Everything runs locally — nothing leaves your machine. When all documents are approved, tell me **"all approved"** and I'll re-anonymize.` +
-            fallbackHint + `\n\n` +
+            `Everything runs locally — nothing leaves your machine. When all documents are approved, tell me **"all approved"** and I'll re-anonymize.\n\n` +
             `⚠️ **I will NOT read any of your documents until its review is approved.**`;
         } else {
           const g = generated[0];
@@ -1251,8 +1227,7 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<string> {
             `**Open this link to review:** ${primaryReviewUrl}\n\n` +
             `You'll see color-coded PII highlights: ` +
             `click any highlight to remove a false positive, select text to add a missed entity, then click **Approve** at the top.\n\n` +
-            `Everything runs locally — nothing leaves your machine. After you approve, tell me **"approved"** or **"continue"** and I'll re-anonymize with your decisions.` +
-            fallbackHint + `\n\n` +
+            `Everything runs locally — nothing leaves your machine. After you approve, tell me **"approved"** or **"continue"** and I'll re-anonymize with your decisions.\n\n` +
             `⚠️ **I will NOT read your document until you approve the review.**`;
         }
       } else {
@@ -1292,7 +1267,6 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<string> {
         review_url: primaryReviewUrl,
         review_urls: reviewUrls,
         bulk_review_url: bulkUrl,
-        standalone_files: standaloneFiles.length > 0 ? standaloneFiles : undefined,
         skipped_sessions: skippedSessionIds.length > 0 ? skippedSessionIds : undefined,
         workspace_dir: generated[0].workspace_dir,
         workspace_dir_display: generated[0].workspace_dir_display,
