@@ -8,14 +8,16 @@ import { SUPPORTED_ENTITIES } from "./entity-types.js";
 import { runPatternRecognizers, type DetectedEntity } from "./pattern-recognizers.js";
 import { deduplicateOverlaps, cleanBoundaries, assignPlaceholders, type AnonymizeResult } from "./entity-dedup.js";
 import { initNer, isNerReady, runNer, nerLog } from "./ner-backend.js";
+import { logServer } from "../audit/audit-logger.js";
 
 let _instance: PIIEngine | null = null;
 
-// Manual chunking constants — mirror the Python v1.1.0 reference
-// (server/pii_shield_server.py:_analyze_chunked, lines 912-953).
-// 4000 char chunks with 250 char overlap, breaking at whitespace.
-const NER_CHUNK_SIZE = 4000;
-const NER_CHUNK_OVERLAP = 250;
+// Manual chunking constants for NER inference.
+// Reduced from 4000 → 2000 to keep each _gliner.inference() call under ~20s,
+// so that a single anonymize_next_chunk (document chunk → 1-2 NER sub-chunks)
+// fits within Cowork's 60s tool timeout.
+const NER_CHUNK_SIZE = 2000;
+const NER_CHUNK_OVERLAP = 200;
 
 // ── Verbatim propagation (Phase 5 Fix A) ─────────────────────────────────────
 // Types eligible for word-boundary propagation across the full document.
@@ -117,6 +119,8 @@ function propagateVerbatimMatches(
     }
 
     let m: RegExpExecArray | null;
+    let matchCount = 0;
+    let skipCount = 0;
     while ((m = pattern.exec(text)) !== null) {
       const s = m.index;
       const e = s + m[0].length;
@@ -124,7 +128,12 @@ function propagateVerbatimMatches(
         pattern.lastIndex++;
         continue;
       }
-      if (overlapsExisting(s, e)) continue;
+      matchCount++;
+      if (overlapsExisting(s, e)) {
+        skipCount++;
+        nerLog(`[NER] propagation: SKIP "${src.rawText}" at [${s}:${e}] — overlaps existing entity`);
+        continue;
+      }
       propagated.push({
         text: m[0],
         type: src.type,
@@ -134,6 +143,9 @@ function propagateVerbatimMatches(
         verified: false,
         reason: `propagated:exact:${src.reason || "ner"}`,
       });
+    }
+    if (matchCount > 0 || skipCount > 0) {
+      nerLog(`[NER] propagation: "${src.rawText}" (${src.type}) — ${matchCount} regex matches, ${skipCount} skipped (overlap), ${matchCount - skipCount} added`);
     }
   }
 
@@ -158,10 +170,14 @@ async function runNerChunkedManual(
   threshold: number,
 ): Promise<DetectedEntity[]> {
   if (text.length <= NER_CHUNK_SIZE) {
-    return await runNer(text, threshold);
+    logServer(`[NER-Manual] text ${text.length} chars <= ${NER_CHUNK_SIZE}, single runNer call`);
+    const r = await runNer(text, threshold);
+    logServer(`[NER-Manual] single runNer done, ${r.length} entities`);
+    return r;
   }
 
   const totalChunks = Math.ceil(text.length / NER_CHUNK_SIZE);
+  logServer(`[NER-Manual] chunking: text=${text.length}, ~${totalChunks} chunks, size=${NER_CHUNK_SIZE}, overlap=${NER_CHUNK_OVERLAP}`);
   nerLog(`[NER] manual chunking: ~${totalChunks} chunks, size=${NER_CHUNK_SIZE}, overlap=${NER_CHUNK_OVERLAP}`);
 
   const allResults: DetectedEntity[] = [];
@@ -181,7 +197,9 @@ async function runNerChunkedManual(
     const chunk = text.slice(start, end);
     chunkNum++;
     const t0 = Date.now();
+    logServer(`[NER-Manual] chunk ${chunkNum}/${totalChunks} [${start}:${end}] (${end - start} chars) — calling runNer...`);
     const chunkResults = await runNer(chunk, threshold);
+    logServer(`[NER-Manual] chunk ${chunkNum}/${totalChunks} done → ${chunkResults.length} entities (${Date.now() - t0}ms)`);
     nerLog(`[NER] chunk ${chunkNum}/${totalChunks} [${start}:${end}] (${end - start} chars) → ${chunkResults.length} entities (${Date.now() - t0}ms)`);
     // Offset-shift to full-text positions
     for (const r of chunkResults) {
@@ -267,39 +285,45 @@ export class PIIEngine {
    * Returns raw entity list (before placeholder assignment).
    */
   async detect(text: string, language = "en"): Promise<DetectedEntity[]> {
+    logServer(`[Detect] START text=${text.length} chars`);
     await this.ensureReady();
-    // Wait for NER — polls every 10s, up to 5 times (~50s).
-    // Fits within Cowork's 60s tool timeout. If NER still loading on first run,
-    // returns patterns-only result with warning. User re-runs after NER is ready.
     await this.waitForNer(10000, 5);
     const minScore = ENV.PII_MIN_SCORE;
 
     // 1. Pattern recognizers
+    logServer(`[Detect] step 1: patterns...`);
     const patternResults = runPatternRecognizers(text);
+    logServer(`[Detect] step 1 done: ${patternResults.length} pattern entities`);
 
     // 2. NER results from GLiNER ONNX (manual chunking — see runNerChunkedManual)
+    logServer(`[Detect] step 2: NER (runNerChunkedManual)...`);
     const nerThreshold = ENV.PII_NER_THRESHOLD;
     const nerResults = await runNerChunkedManual(text, nerThreshold);
+    logServer(`[Detect] step 2 done: ${nerResults.length} NER entities`);
 
     // 3. Merge all results
+    logServer(`[Detect] step 3: merge + filter (minScore=${minScore})...`);
     let allResults = [...patternResults, ...nerResults];
-
-    // 4. Filter by min score
     allResults = allResults.filter((e) => e.score >= minScore);
+    logServer(`[Detect] step 3 done: ${allResults.length} after filter`);
 
-    // 5. Deduplicate overlapping spans
+    // 4. Deduplicate overlapping spans
+    logServer(`[Detect] step 4: dedup...`);
     allResults = deduplicateOverlaps(allResults);
+    logServer(`[Detect] step 4 done: ${allResults.length} after dedup`);
 
-    // 6. Clean boundaries (snap words + filter false positives)
+    // 5. Clean boundaries (snap words + filter false positives)
+    logServer(`[Detect] step 5: cleanBoundaries...`);
     allResults = cleanBoundaries(text, allResults);
+    logServer(`[Detect] step 5 done: ${allResults.length} after clean`);
 
-    // 7. Verbatim propagation (Phase 5 Fix A): re-anonymize all word-boundary
-    //    occurrences of any detected NER entity text. Closes the title-page
-    //    miss (GLiNER scores isolated headings low) and the legacy gap where
-    //    a name found in the body was never propagated to earlier occurrences.
+    // 6. Verbatim propagation (Phase 5 Fix A)
+    logServer(`[Detect] step 6: propagateVerbatimMatches...`);
     allResults = propagateVerbatimMatches(text, allResults);
+    logServer(`[Detect] step 6a: final dedup...`);
     allResults = deduplicateOverlaps(allResults);
 
+    logServer(`[Detect] DONE: ${allResults.length} entities`);
     return allResults;
   }
 

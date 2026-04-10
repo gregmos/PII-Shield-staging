@@ -10,15 +10,18 @@ HITL review is **mandatory** after every `anonymize_file` call (unless `PII_SKIP
 
 1. `anonymize_file` returned `session_id`, `output_path` (maybe `docx_output_path`). **Do not Read any of these paths.** The file is SEALED.
 
-2. Call `start_review(session_id, host_workspace_dir=<host_dir from your earlier resolve_path(marker)>)`.
+2. Call `start_review`. **If you have multiple session_ids (2+ documents), pass them ALL in one call:**
+   - **Single document:** `start_review(session_id=<sid>, host_workspace_dir=<host_dir>)`
+   - **Multiple documents:** `start_review(session_ids=[sid_1, sid_2, ...], host_workspace_dir=<host_dir>)` — returns a **single bulk review URL** with tabs for all documents. Do NOT call `start_review` separately for each document.
    - Pass `host_workspace_dir` — it's the `host_dir` field from `resolve_path(filename, marker)`. Used for display and the static HTML fallback.
    - The response contains:
-     - `review_url` — live HTTP URL on the sidecar (e.g. `http://127.0.0.1:6789/review/<session_id>`). **This is the primary review path.**
-     - `review_urls` — array of `{session_id, review_url}` (for BULK mode, one per session).
-     - `review_file` / `review_file_display` — static HTML fallback (still generated).
+     - `review_url` — primary review URL. For bulk mode, this is the bulk page with document tabs.
+     - `bulk_review_url` — bulk page URL (null for single document).
+     - `review_urls` — array of `{session_id, review_url}` (individual per-session URLs).
+     - `standalone_files` — (Cowork only) self-contained HTML files as fallback if HTTP URL fails.
      - `workspace_dir` / `workspace_dir_display` — VM-form / host-form workspace folder.
      - `cowork: true|false` — whether inside a Cowork VM.
-     - `review_files` — array (BULK mode returns one entry per session).
+     - `review_files` — array (one entry per session).
      - `user_message` — relay to the user **verbatim**.
 
 2b. **Cowork — user opens link in browser:**
@@ -32,7 +35,7 @@ HITL review is **mandatory** after every `anonymize_file` call (unless `PII_SKIP
    - `start_review` automatically opens `review_url` in the default browser.
    - Approve POSTs to the sidecar for instant pickup. As fallback, writes `review_<session_id>_decisions.json` to Downloads.
 
-3. Poll `get_review_status(session_id)` every ~15 seconds. While waiting, you MAY:
+3. Poll `get_review_status(session_id)` every ~15 seconds for each session. For bulk mode, poll ALL session_ids — wait until ALL are approved before proceeding. While waiting, you MAY:
    - Read skill reference files (memo style, docx formatting, etc.)
    - Create marker files for other documents
    - Plan the analysis structure in your head

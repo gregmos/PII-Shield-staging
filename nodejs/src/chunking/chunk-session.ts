@@ -14,6 +14,7 @@ import { splitParagraphs } from "./paragraph-splitter.js";
 import type { DetectedEntity } from "../engine/pattern-recognizers.js";
 import type { PlaceholderEntity } from "../engine/entity-dedup.js";
 import { TAG_NAMES } from "../engine/entity-types.js";
+import { logServer } from "../audit/audit-logger.js";
 
 export interface ChunkSession {
   text: string;
@@ -94,7 +95,9 @@ export async function processChunk(sessionId: string): Promise<PlaceholderEntity
   const chunkText = cs.chunks[chunkIdx];
 
   // Detect entities in this chunk
+  logServer(`[ProcessChunk] chunk ${chunkIdx + 1}/${cs.chunks.length} (${chunkText.length} chars) — calling engine.detect()...`);
   const entities = await engine.detect(chunkText, cs.language);
+  logServer(`[ProcessChunk] chunk ${chunkIdx + 1}/${cs.chunks.length} — engine.detect() returned ${entities.length} entities`);
 
   // Calculate offset for this chunk in the full text
   let offset = 0;
@@ -124,8 +127,12 @@ export async function processChunk(sessionId: string): Promise<PlaceholderEntity
 /** Finalize: assemble anonymized text from all chunks */
 export function finalizeChunkSession(sessionId: string): {
   anonymizedText: string;
+  originalText: string;
   mapping: Record<string, string>;
+  entities: PlaceholderEntity[];
   entityCount: number;
+  sourcePath: string;
+  sourceSuffix: string;
 } {
   const cs = _sessions.get(sessionId);
   if (!cs) throw new Error(`Chunk session not found: ${sessionId}`);
@@ -137,14 +144,20 @@ export function finalizeChunkSession(sessionId: string): {
     result = result.slice(0, e.start) + e.placeholder + result.slice(e.end);
   }
 
+  const finalResult = {
+    anonymizedText: result,
+    originalText: cs.text,
+    mapping: cs.mapping,
+    entities: [...cs.allEntities],
+    entityCount: cs.allEntities.length,
+    sourcePath: cs.sourcePath,
+    sourceSuffix: cs.sourceSuffix,
+  };
+
   // Clean up session
   _sessions.delete(sessionId);
 
-  return {
-    anonymizedText: result,
-    mapping: cs.mapping,
-    entityCount: cs.allEntities.length,
-  };
+  return finalResult;
 }
 
 /** Remove sessions older than TTL */

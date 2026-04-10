@@ -13,18 +13,16 @@ import crypto from "node:crypto";
 import { exec } from "node:child_process";
 import { ENV } from "../utils/config.js";
 import { getReview, saveReview, approveReview, type ReviewData } from "../mapping/review-store.js";
+import { logServer } from "../audit/audit-logger.js";
 // @ts-ignore — esbuild bundles .html as text via loader config
 import EMBEDDED_REVIEW_HTML from "../../assets/review_ui.html";
 
 let _server: http.Server | null = null;
 let _port: number = ENV.PII_REVIEW_PORT;
 
-/** Get review_ui.html content: embedded string first, then disk fallback */
-/** Log to both audit file (same as NER logs) and stderr */
+/** Log to server.log + stderr */
 function reviewLog(msg: string): void {
-  const full = `[Review] ${msg}`;
-  try { (globalThis as any).__earlyLog?.(full); } catch { /* ignore */ }
-  console.error(full);
+  logServer(`[Review] ${msg}`);
 }
 
 function getReviewHtmlContent(): string {
@@ -51,6 +49,56 @@ function getReviewHtmlContent(): string {
     } catch { /* next */ }
   }
   throw new Error("review_ui.html not found");
+}
+
+/**
+ * Serve the bulk review page for multiple sessions.
+ * Injects BULK_SESSIONS array so the UI renders document tabs.
+ */
+export function serveReviewBulkPage(sessionIds: string[], res: http.ServerResponse): void {
+  reviewLog(`serveReviewBulkPage called for sessions=${sessionIds.join(",")}`);
+  // Validate at least one session exists
+  const validIds = sessionIds.filter((sid) => !!getReview(sid));
+  if (validIds.length === 0) {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(`<h1>No valid review sessions found</h1>`);
+    return;
+  }
+  try {
+    let html = getReviewHtmlContent();
+    const versionTag = `<script>console.log("[PII-SERVER] v2.1 bulk served at ${new Date().toISOString()}, sessions=${validIds.length}");document.title="PII Shield Review (${validIds.length} docs)";</script>`;
+    const bulkInjection = `<script>window.BULK_SESSIONS = ${JSON.stringify(validIds)};</script>`;
+    html = html.replace("<head>", `<head>\n${versionTag}\n${bulkInjection}`);
+    res.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store, no-cache, must-revalidate",
+      "Pragma": "no-cache",
+      "X-PII-Version": "2.1-bulk",
+    });
+    res.end(html);
+  } catch (e) {
+    reviewLog(`serveReviewBulkPage FAILED: ${e}`);
+    res.writeHead(500, { "Content-Type": "text/html" });
+    res.end("<h1>review_ui.html not found</h1>");
+  }
+}
+
+/**
+ * Return summary info for a list of sessions (used by bulk review UI).
+ */
+export function serveSessionsList(sessionIds: string[], res: http.ServerResponse): void {
+  const sessions = sessionIds.map((sid) => {
+    const review = getReview(sid);
+    return {
+      session_id: sid,
+      source_filename: (review as any)?.source_filename
+        || (review as any)?.original_filename
+        || "",
+      approved: review?.approved || false,
+      entity_count: (review?.entities || []).length,
+    };
+  });
+  sendJson(res, { sessions });
 }
 
 export function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -327,5 +375,86 @@ window.PII_SHIELD_PORT = "${sidecarPort}";
   fs.writeFileSync(outPath, html, "utf-8");
 
   console.error(`[Review] Standalone HTML written to ${outPath}`);
+  return outPath;
+}
+
+/**
+ * Generate a self-contained BULK review HTML file for multiple sessions.
+ * Embeds all sessions' data so it works without the HTTP server.
+ * User opens one file and sees tabs for all documents.
+ */
+export function generateReviewBulkHtml(sessionIds: string[], outputDir: string): string | null {
+  // Collect review data for all valid sessions
+  const validSessions: Array<{
+    session_id: string;
+    source_filename: string;
+    approved: boolean;
+    entity_count: number;
+    reviewPayload: any;
+  }> = [];
+
+  for (const sid of sessionIds) {
+    const review = getReview(sid);
+    if (!review) continue;
+    validSessions.push({
+      session_id: sid,
+      source_filename: (review as any)?.source_filename
+        || (review as any)?.original_filename || sid,
+      approved: review.approved || false,
+      entity_count: (review.entities || []).length,
+      reviewPayload: {
+        session_id: sid,
+        original_text: review.original_text || "",
+        anonymized_text: review.anonymized_text || "",
+        entities: review.entities || [],
+        original_html: review.html_text || "",
+        approved: review.approved || false,
+        overrides: review.overrides || { remove: [], add: [] },
+      },
+    });
+  }
+
+  if (validSessions.length === 0) return null;
+
+  let template: string;
+  try {
+    template = getReviewHtmlContent();
+  } catch {
+    console.error("[Review] review_ui.html template not found");
+    return null;
+  }
+
+  // Build BULK_REVIEW_DATA map: { session_id → review payload }
+  const bulkDataMap: Record<string, any> = {};
+  for (const s of validSessions) {
+    bulkDataMap[s.session_id] = s.reviewPayload;
+  }
+
+  // Session metadata for tabs
+  const bulkMeta = validSessions.map((s) => ({
+    session_id: s.session_id,
+    source_filename: s.source_filename,
+    approved: s.approved,
+    entity_count: s.entity_count,
+  }));
+
+  const sidecarPort = parseInt(process.env.PII_SHIELD_HTTP_PORT || "6789", 10);
+  const injection = `
+<script>
+window.STANDALONE_MODE = true;
+window.BULK_SESSIONS = ${JSON.stringify(validSessions.map((s) => s.session_id))};
+window.BULK_SESSIONS_META = ${JSON.stringify(bulkMeta)};
+window.BULK_REVIEW_DATA = ${JSON.stringify(bulkDataMap)};
+window.WORKSPACE_DIR = ${JSON.stringify(outputDir)};
+window.PII_SHIELD_PORT = "${sidecarPort}";
+</script>`;
+
+  const html = template.replace("</head>", `${injection}\n</head>`);
+
+  fs.mkdirSync(outputDir, { recursive: true });
+  const outPath = path.join(outputDir, `review_bulk_${validSessions.length}docs.html`);
+  fs.writeFileSync(outPath, html, "utf-8");
+
+  console.error(`[Review] Standalone BULK HTML written to ${outPath} (${validSessions.length} sessions)`);
   return outPath;
 }

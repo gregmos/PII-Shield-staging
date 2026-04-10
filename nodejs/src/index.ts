@@ -21,7 +21,7 @@ import {
   latestSessionId, cleanupOldMappings,
 } from "./mapping/mapping-store.js";
 import { getReview, getReviewStatus, saveReview, type ReviewData } from "./mapping/review-store.js";
-import { logToolCall, logToolResponse, logToolError } from "./audit/audit-logger.js";
+import { logToolCall, logToolResponse, logToolError, logServer } from "./audit/audit-logger.js";
 import { CHUNK } from "./utils/config.js";
 import { extractPdfText } from "./pdf/pdf-reader.js";
 import {
@@ -31,7 +31,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
-import { startReviewServer, openBrowser, generateReviewHtml } from "./review/review-server.js";
+import { startReviewServer, openBrowser, generateReviewHtml, generateReviewBulkHtml } from "./review/review-server.js";
 import { resolvePath as resolvePathFn, findFile as findFileFn } from "./path-resolution/path-resolver.js";
 import { anonymizeDocx, anonymizeDocxWithMapping } from "./docx/docx-anonymizer.js";
 import { deanonymizeDocx } from "./docx/docx-deanonymizer.js";
@@ -886,7 +886,14 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<string> {
         try {
           text = await extractPdfText(resolvedPath);
         } catch (e) {
-          return JSON.stringify({ error: `Failed to read PDF: ${e}` }, null, 2);
+          const msg = e instanceof Error ? e.message : String(e);
+          const stack = e instanceof Error ? e.stack : undefined;
+          return JSON.stringify({
+            error: `Failed to read PDF: ${msg}`,
+            file: path.basename(resolvedPath),
+            file_size_bytes: fs.existsSync(resolvedPath) ? fs.statSync(resolvedPath).size : 0,
+            traceback: stack || null,
+          }, null, 2);
         }
       } else if (ext === ".docx") {
         const docxResult = await anonymizeDocx(resolvedPath, language, prefix);
@@ -936,41 +943,42 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<string> {
 
       // Chunked processing for long documents
       if (text.length > CHUNK.THRESHOLD) {
-        const t0 = Date.now();
-        await engine.detect(text.slice(0, 3000), language); // calibration
-        const calElapsed = (Date.now() - t0) / 1000;
-        const charsPerSec = 3000 / Math.max(calElapsed, 0.1);
-        const optimalChunkSize = Math.max(4000, Math.min(50000, Math.floor(charsPerSec * 40)));
+        // Fixed conservative chunk size — no calibration. Calibration was
+        // misleading (first NER call after model load is atypically fast,
+        // giving 6x inflated chars/sec) and itself took 14s of the timeout.
+        const chunkSize = 5000;
+        logServer(`[Anonymize] Text ${text.length} chars > threshold ${CHUNK.THRESHOLD}, entering chunked mode (chunk_size=${chunkSize})`);
 
         const { sessionId: chunkSessionId, session: cs } = createChunkSession({
           text,
-          chunkSize: optimalChunkSize,
+          chunkSize,
           prefix,
           language,
           sourcePath: resolvedPath,
           sourceSuffix: ext,
-          charsPerSec,
+          charsPerSec: 0,
           entityOverrides: "",
           docxHtml: null,
         });
+        logServer(`[Anonymize] Chunk session ${chunkSessionId}: ${cs.chunks.length} chunks created`);
 
-        // Process first chunk immediately
-        const firstConfirmed = await processChunk(chunkSessionId);
-
+        // Return immediately — no inline chunk processing.
+        // Claude calls anonymize_next_chunk(session_id) for each chunk,
+        // keeping each tool call within Cowork's 60s timeout.
         return JSON.stringify({
           status: "chunked",
           session_id: chunkSessionId,
           total_chunks: cs.chunks.length,
-          processed_chunks: 1,
-          progress_pct: Math.round(100 / cs.chunks.length),
-          entities_so_far: firstConfirmed.length,
-          chars_per_sec: Math.round(charsPerSec),
-          chunk_size: optimalChunkSize,
-          note: "Document is large. Call anonymize_next_chunk(session_id) to process remaining chunks, then get_full_anonymized_text(session_id).",
+          processed_chunks: 0,
+          progress_pct: 0,
+          entities_so_far: 0,
+          chunk_size: chunkSize,
+          note: "Document is large. Call anonymize_next_chunk(session_id) repeatedly to process each chunk (one per call), then get_full_anonymized_text(session_id) to finalize.",
         }, null, 2);
       }
 
       // Standard (non-chunked) processing
+      logServer(`[Anonymize] Standard mode: ${text.length} chars, running NER...`);
       const result = await engine.anonymizeText(text, language, prefix);
       const sessionId = newSessionId();
       saveMapping(sessionId, result.mapping);
@@ -1049,18 +1057,38 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<string> {
         const mappingSessionId = newSessionId();
         saveMapping(mappingSessionId, result.mapping);
 
-        // Retrieve source path from session (before it was deleted)
-        // For now, write to a temp location
-        const outPath = path.join(PATHS.DATA_DIR, "output", `${mappingSessionId}_anonymized.txt`);
-        fs.mkdirSync(path.dirname(outPath), { recursive: true });
+        // Write output file next to source (like non-chunked path)
+        const ext = result.sourceSuffix || ".txt";
+        const outDir = path.join(path.dirname(result.sourcePath), `pii_shield_${mappingSessionId}`);
+        fs.mkdirSync(outDir, { recursive: true });
+        const outPath = path.join(outDir, `${path.basename(result.sourcePath, ext)}_anonymized${ext === ".pdf" ? ".txt" : ext}`);
         fs.writeFileSync(outPath, result.anonymizedText, "utf-8");
+
+        // Save review data so start_review works for chunked documents.
+        // Save under BOTH the new UUID and the original chunk hex ID —
+        // Claude may pass either one to start_review.
+        const reviewData = {
+          session_id: mappingSessionId,
+          entities: result.entities,
+          original_text: result.originalText,
+          anonymized_text: result.anonymizedText,
+          overrides: { remove: [], add: [] },
+          approved: false,
+          timestamp: Date.now(),
+          output_dir: outDir,
+        };
+        saveReview(mappingSessionId, reviewData);
+        saveMapping(sessionId, result.mapping);
+        saveReview(sessionId, { ...reviewData, session_id: sessionId });
+
+        logServer(`[Chunked] Finalized ${sessionId} → ${mappingSessionId}: ${result.entityCount} entities, output=${outPath}`);
 
         return JSON.stringify({
           status: "success",
           session_id: mappingSessionId,
           entity_count: result.entityCount,
           output_path: outPath,
-          note: "Anonymized text assembled and written to output_path.",
+          note: "Anonymized text assembled and written to output_path. Use this session_id for start_review.",
         }, null, 2);
       } catch (e) {
         return JSON.stringify({
@@ -1091,15 +1119,27 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<string> {
       // Claude should pass the host dir so we can display a real path.
       const hostWorkspaceDir = ((args.host_workspace_dir as string) || "").trim();
 
-      // Validate every session before generating any HTML.
+      // Validate sessions — skip missing ones instead of failing entirely.
+      // This way if one session is invalid, the rest still get reviewed.
+      const validSessionIds: string[] = [];
+      const skippedSessionIds: string[] = [];
       for (const sid of sessionIds) {
         const s = getReviewStatus(sid);
         if (s.status === "not_found") {
-          return JSON.stringify({
-            error: `No review data for session ${sid}. Run anonymize_file first.`,
-          }, null, 2);
+          skippedSessionIds.push(sid);
+          logServer(`[Review] Session ${sid} not found, skipping`);
+        } else {
+          validSessionIds.push(sid);
         }
       }
+      if (validSessionIds.length === 0) {
+        return JSON.stringify({
+          error: `No review data found for any session. Tried: ${sessionIds.join(", ")}. Run anonymize_file first.`,
+          skipped: skippedSessionIds,
+        }, null, 2);
+      }
+      // Replace sessionIds with valid ones for the rest of the handler
+      const effectiveSessionIds = validSessionIds;
 
       // Primary path: generate a self-contained HTML per session at the
       // workspace root (same folder as the user's source file, so it's visible
@@ -1114,25 +1154,23 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<string> {
       // workspace folder, and `get_review_status` polls the workspace dir
       // first. On a local install (not Cowork), ~/Downloads is polled too and
       // the pickup is fully automatic.
+      const stripCoworkPrefix = (p: string): string => {
+        if (!p) return p;
+        const m = p.match(/^\/sessions\/[^/]+\/mnt\/(.+)$/);
+        return m ? m[1] : p;
+      };
+
       const generated: Array<{
         session_id: string;
-        review_file: string;       // VM-form (where we actually wrote the file)
-        review_file_display: string; // host-form if we have it, else VM-form
         workspace_dir: string;
         workspace_dir_display: string;
         source_filename: string;
       }> = [];
-      for (const sid of sessionIds) {
+      for (const sid of effectiveSessionIds) {
         const reviewData = getReview(sid);
         const sessionOutDir = (reviewData as any)?.output_dir || process.cwd();
         const workspaceRoot = path.dirname(sessionOutDir);
-        const htmlPath = generateReviewHtml(sid, workspaceRoot);
-        if (!htmlPath) {
-          return JSON.stringify({
-            error: `Failed to generate review HTML for session ${sid}.`,
-            hint: "Check workspace write permissions.",
-          }, null, 2);
-        }
+
         // Persist workspace_dir + host_workspace_dir on the review record so
         // get_review_status can poll them later without needing the caller to
         // pass them again.
@@ -1147,73 +1185,90 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<string> {
           || path.basename((reviewData as any)?.output_path || "")
           || sid;
 
-        const htmlBasename = path.basename(htmlPath);
-        // Strip the Cowork VM prefix `/sessions/<sid>/mnt/` from BOTH the
-        // workspace dir and the html path. We must strip unconditionally
-        // because in Cowork Claude tends to pass `host_workspace_dir` set to
-        // the VM-internal mount path (it has no other path to give us), so
-        // gating the strip on `!hostWorkspaceDir` would never fire and the
-        // raw VM path would leak into the user-facing message.
-        const stripCoworkPrefix = (p: string): string => {
-          if (!p) return p;
-          const m = p.match(/^\/sessions\/[^/]+\/mnt\/(.+)$/);
-          return m ? m[1] : p;
-        };
-        const strippedWs = stripCoworkPrefix(hostWorkspaceDir || workspaceRoot);
-        const displayWs = strippedWs;
-        const displayHtml = strippedWs && htmlBasename
-          ? `${strippedWs.replace(/[/\\]+$/, "")}/${htmlBasename}`
-          : stripCoworkPrefix(htmlPath);
-
         generated.push({
           session_id: sid,
-          review_file: htmlPath,
-          review_file_display: displayHtml,
           workspace_dir: workspaceRoot,
-          workspace_dir_display: displayWs,
+          workspace_dir_display: stripCoworkPrefix(hostWorkspaceDir || workspaceRoot),
           source_filename: sourceFile,
         });
       }
 
       const inCowork = isCowork();
-      // HTTP sidecar review URL — works in both Cowork (port forwarded to host) and desktop
       const httpPort = parseInt(process.env.PII_SHIELD_HTTP_PORT || "6789", 10);
+      const isBulk = generated.length > 1;
 
+      // In Cowork, generate standalone HTML as fallback
+      const standaloneFiles: Array<{ session_id: string; html_path: string }> = [];
+      if (inCowork) {
+        const outputDir = generated[0].workspace_dir;
+        if (isBulk) {
+          const htmlPath = generateReviewBulkHtml(effectiveSessionIds, outputDir);
+          if (htmlPath) {
+            standaloneFiles.push({ session_id: "bulk", html_path: htmlPath });
+            logServer(`[Review] Standalone BULK HTML generated: ${htmlPath}`);
+          }
+        } else {
+          const htmlPath = generateReviewHtml(generated[0].session_id, outputDir);
+          if (htmlPath) {
+            standaloneFiles.push({ session_id: generated[0].session_id, html_path: htmlPath });
+            logServer(`[Review] Standalone HTML generated: ${htmlPath}`);
+          }
+        }
+      }
+
+      // Per-session review URLs
       const reviewUrls = generated.map((g) => ({
         session_id: g.session_id,
         review_url: `http://127.0.0.1:${httpPort}/review/${g.session_id}`,
       }));
+      const bulkUrl = isBulk
+        ? `http://127.0.0.1:${httpPort}/review-bulk?sessions=${effectiveSessionIds.join(",")}`
+        : null;
+
+      // Primary review URL: bulk page for multiple docs, single page for one
+      const primaryReviewUrl = bulkUrl || reviewUrls[0].review_url;
 
       let userMessage: string;
       if (inCowork) {
-        // Cowork: give user a clickable link. Cowork forwards VM ports to
-        // host, so 127.0.0.1:6789 opens in the user's browser. Server Mode
-        // approve POSTs to the sidecar → in-memory pickup is instant.
-        if (generated.length === 1) {
+        const fallbackHint = standaloneFiles.length > 0
+          ? `\n\n💡 **If the link doesn't open**, use the standalone HTML file(s) in your workspace:\n` +
+            standaloneFiles.map((f) => `- \`${path.basename(f.html_path)}\``).join("\n")
+          : "";
+        if (isBulk) {
+          const fileList = generated.map((g, i) => `${i + 1}. **${g.source_filename}**`).join("\n");
+          userMessage =
+            `${generated.length} documents ready for review:\n\n${fileList}\n\n` +
+            `**Open this link to review all documents:** ${primaryReviewUrl}\n\n` +
+            `You'll see document tabs at the top — review each one and click **Approve**. ` +
+            `After approving one document, the next one opens automatically.\n\n` +
+            `Everything runs locally — nothing leaves your machine. When all documents are approved, tell me **"all approved"** and I'll re-anonymize.` +
+            fallbackHint + `\n\n` +
+            `⚠️ **I will NOT read any of your documents until its review is approved.**`;
+        } else {
           const g = generated[0];
           userMessage =
             `Review page is ready for **${g.source_filename}**.\n\n` +
-            `**Open this link to review:** ${reviewUrls[0].review_url}\n\n` +
+            `**Open this link to review:** ${primaryReviewUrl}\n\n` +
             `You'll see color-coded PII highlights: ` +
             `click any highlight to remove a false positive, select text to add a missed entity, then click **Approve** at the top.\n\n` +
-            `Everything runs locally — nothing leaves your machine. After you approve, tell me **"approved"** or **"continue"** and I'll re-anonymize with your decisions.\n\n` +
+            `Everything runs locally — nothing leaves your machine. After you approve, tell me **"approved"** or **"continue"** and I'll re-anonymize with your decisions.` +
+            fallbackHint + `\n\n` +
             `⚠️ **I will NOT read your document until you approve the review.**`;
-        } else {
-          const lines = generated
-            .map((g, i) => `${i + 1}. **${g.source_filename}** → ${reviewUrls[i].review_url}`)
-            .join("\n");
-          userMessage =
-            `${generated.length} review pages are ready:\n\n${lines}\n\n` +
-            `Open each link, review the highlights and click **Approve**.\n\n` +
-            `When **all ${generated.length}** are approved, tell me **"all approved"** and I'll re-anonymize each document.\n\n` +
-            `⚠️ **I will NOT read any of your documents until its review is approved.**`;
         }
       } else {
         // Desktop: open in default browser
         const saveHint =
           `When you click **Approve**, a file called \`review_${generated[0].session_id}_decisions.json\` ` +
           `will either open a Save As dialog (Chrome / Edge) or drop into your browser's Downloads folder. Either is fine — my server will find it automatically.`;
-        if (generated.length === 1) {
+        if (isBulk) {
+          const fileList = generated.map((g, i) => `${i + 1}. **${g.source_filename}**`).join("\n");
+          userMessage =
+            `${generated.length} documents ready for review:\n\n${fileList}\n\n` +
+            `Opening the review page in your browser. You'll see document tabs at the top — review each one and click **Approve**.\n\n` +
+            `${saveHint}\n\n` +
+            `When all documents are approved, tell me **"all approved"** and I'll re-anonymize.\n\n` +
+            `⚠️ **I will NOT read any of your documents until its review is approved.**`;
+        } else {
           const g = generated[0];
           userMessage =
             `Review page is ready for **${g.source_filename}**.\n\n` +
@@ -1223,31 +1278,22 @@ async function handleToolCall(name: string, args: ToolArgs): Promise<string> {
             `${saveHint}\n\n` +
             `Then tell me **"approved"** or **"continue"** and I'll re-anonymize with your decisions.\n\n` +
             `⚠️ **I will NOT read your document until you approve the review.**`;
-        } else {
-          const lines = generated
-            .map((g, i) => `${i + 1}. **${g.source_filename}** → \`${reviewUrls[i].review_url}\`  (session \`${g.session_id}\`)`)
-            .join("\n");
-          userMessage =
-            `${generated.length} review pages are ready:\n\n${lines}\n\n` +
-            `Opening the first one in your browser. Review the highlights and click **Approve** on each.\n\n` +
-            `${saveHint}\n\n` +
-            `When **all ${generated.length}** are approved, tell me **"all approved"** and I'll re-anonymize each document.\n\n` +
-            `⚠️ **I will NOT read any of your documents until its review is approved.**`;
         }
-        // Desktop: auto-open the first review URL in the browser
+        // Desktop: auto-open the review URL in the browser
         try {
           const { openBrowser } = await import("./review/review-server.js");
-          openBrowser(reviewUrls[0].review_url);
+          openBrowser(primaryReviewUrl);
         } catch { /* best effort */ }
       }
 
       return JSON.stringify({
         status: "review_ready",
         session_id: generated[0].session_id,
-        review_url: reviewUrls[0].review_url,
+        review_url: primaryReviewUrl,
         review_urls: reviewUrls,
-        review_file: generated[0].review_file,
-        review_file_display: generated[0].review_file_display,
+        bulk_review_url: bulkUrl,
+        standalone_files: standaloneFiles.length > 0 ? standaloneFiles : undefined,
+        skipped_sessions: skippedSessionIds.length > 0 ? skippedSessionIds : undefined,
         workspace_dir: generated[0].workspace_dir,
         workspace_dir_display: generated[0].workspace_dir_display,
         review_files: generated,
@@ -1840,15 +1886,20 @@ async function main() {
     const {
       serveReviewPage, serveReviewData, handleApprove, handleApproveGet,
       handleRemoveEntity, handleAddEntity, readBody, sendJson,
+      serveReviewBulkPage, serveSessionsList,
     } = await import("./review/review-server.js");
 
     const httpServer = http.createServer(async (req, res) => {
+      try {
       const urlPath = (req.url || "/").split("?")[0];
 
-      // ── CORS (needed for review UI served from file:// or preview panel)
+      // ── CORS + Private Network Access (PNA) ────────────────────────────
+      // PNA: Chrome blocks requests from public HTTPS origins (Cowork UI)
+      // to private IPs (127.0.0.1) unless server opts in via this header.
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      res.setHeader("Access-Control-Allow-Private-Network", "true");
       // Prevent browser caching — sidecar responses must always be fresh
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
       res.setHeader("Pragma", "no-cache");
@@ -1863,6 +1914,35 @@ async function main() {
       if (req.method === "GET" && urlPath === "/version") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ version: "2.1", build: "2026-04-09", pid: process.pid }));
+        return;
+      }
+
+      // ── Bulk Review UI ──────────────────────────────────────────────
+      if (req.method === "GET" && urlPath === "/review-bulk") {
+        const queryStr = (req.url || "").split("?")[1] || "";
+        const params = new URLSearchParams(queryStr);
+        const sessionsParam = params.get("sessions") || "";
+        const sessionIds = sessionsParam.split(",").filter((s) => s.length > 0);
+        if (sessionIds.length === 0) {
+          res.writeHead(400, { "Content-Type": "text/html" });
+          res.end("<h1>Missing sessions parameter</h1>");
+          return;
+        }
+        // Cache-buster redirect
+        if (!queryStr.includes("_t=")) {
+          res.writeHead(302, { "Location": `/review-bulk?sessions=${sessionsParam}&_t=${Date.now()}`, "Cache-Control": "no-store" });
+          res.end();
+          return;
+        }
+        serveReviewBulkPage(sessionIds, res);
+        return;
+      }
+      if (req.method === "GET" && urlPath === "/api/sessions") {
+        const queryStr = (req.url || "").split("?")[1] || "";
+        const params = new URLSearchParams(queryStr);
+        const idsParam = params.get("ids") || "";
+        const sessionIds = idsParam.split(",").filter((s) => s.length > 0);
+        serveSessionsList(sessionIds, res);
         return;
       }
 
@@ -1946,8 +2026,10 @@ async function main() {
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           logToolError(method, err instanceof Error ? err : new Error(msg));
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32603, message: msg } }));
+          if (!res.headersSent) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32603, message: msg } }));
+          }
         }
         return;
       }
@@ -1955,15 +2037,25 @@ async function main() {
       // ── 404 ──────────────────────────────────────────────────────────
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Not found" }));
+
+      } catch (err) {
+        const msg = err instanceof Error ? (err.stack || err.message) : String(err);
+        logServer(`[HTTP] CRASH PREVENTED: ${msg}`);
+        try { (globalThis as any).__earlyLog?.(`[HTTP CRASH PREVENTED] ${msg}`); } catch {}
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Internal server error", detail: msg }));
+        }
+      }
     });
 
     httpServer.listen(HTTP_PORT, "127.0.0.1", () => {
       earlyLog(`[main] HTTP sidecar listening on 127.0.0.1:${HTTP_PORT}`);
-      console.error(`[PII Shield] HTTP sidecar on 127.0.0.1:${HTTP_PORT} (MCP + Review UI)`);
+      logServer(`[HTTP] Sidecar started on 127.0.0.1:${HTTP_PORT} (pid=${process.pid})`);
     });
     httpServer.on("error", (e: any) => {
-      earlyLog(`[main] HTTP sidecar failed: ${e.message}`);
-      // Non-fatal — stdio still works
+      logServer(`[HTTP] Sidecar failed to start: ${e.code} ${e.message}`);
+      earlyLog(`[main] HTTP sidecar failed: ${e.code} ${e.message}`);
     });
   } catch (e) {
     earlyLog(`[main] HTTP sidecar setup failed: ${e}`);

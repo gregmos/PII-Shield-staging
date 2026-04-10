@@ -15,6 +15,7 @@ import { PATHS } from "../utils/config.js";
 let _initialized = false;
 let _nerLogPath: string;
 let _auditLogPath: string;
+let _serverLogPath: string;
 
 function ensureInit(): void {
   if (_initialized) return;
@@ -26,11 +27,14 @@ function ensureInit(): void {
   }
   _nerLogPath = path.join(auditDir, "ner_debug.log");
   _auditLogPath = path.join(auditDir, "mcp_audit.log");
+  _serverLogPath = path.join(auditDir, "server.log");
   _initialized = true;
 
   appendLine(_nerLogPath, "===== PII Shield v2.0.0 (Node.js) session started =====");
+  appendLine(_serverLogPath, "===== PII Shield v2.0.0 server started (pid=" + process.pid + ") =====");
   console.error(`[Audit] NER log: ${_nerLogPath}`);
   console.error(`[Audit] MCP audit log: ${_auditLogPath}`);
+  console.error(`[Audit] Server log: ${_serverLogPath}`);
 }
 
 function timestamp(): string {
@@ -79,4 +83,12 @@ export function logToolResponse(toolName: string, response: string): void {
 export function logToolError(toolName: string, error: Error): void {
   ensureInit();
   appendLine(_auditLogPath, `<<< ERR  ${toolName} -> ${error.constructor.name}: ${error.message}`);
+}
+
+/** General-purpose server log (server.log) — HTTP, PDF, review, lifecycle events */
+export function logServer(message: string): void {
+  ensureInit();
+  appendLine(_serverLogPath, message);
+  // Also write to stderr for Cowork terminal visibility
+  try { console.error(message); } catch {}
 }

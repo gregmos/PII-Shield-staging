@@ -16,6 +16,7 @@ import { createRequire as _createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import type { DetectedEntity } from "./pattern-recognizers.js";
 import { PATHS, LEGACY_DATA_DIR } from "../utils/config.js";
+import { logServer } from "../audit/audit-logger.js";
 
 function getDepsDir(): string {
   return PATHS.DEPS_DIR;
@@ -667,12 +668,14 @@ export async function runNer(
   _inferenceCallCount++;
   try {
     nerLog(`[NER] runNer: text.length=${text.length}, threshold=${threshold}`);
+    logServer(`[NER-Inference] BEFORE _gliner.inference() text=${text.length} chars`);
     const results = await _gliner.inference({
       texts: [text],
       entities: NER_LABELS,
       flatNer: true,
       threshold,
     });
+    logServer(`[NER-Inference] AFTER _gliner.inference() — returned OK`);
     nerLog(`[NER] runNer: raw results = ${JSON.stringify(results).slice(0, 200)}`);
 
     if (!results || results.length === 0) {

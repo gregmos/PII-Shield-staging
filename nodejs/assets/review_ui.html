@@ -22,14 +22,35 @@
     --danger: #ef4444; --danger-bg: #fee2e2;
     --added: #0ea5e9; --added-bg: #e0f2fe;
   }
+  /* Dark theme variables */
+  .dark {
+    --bg: #0f172a; --surface: #1e293b; --text: #e2e8f0; --text-secondary: #94a3b8;
+    --border: #334155; --accent: #34d399; --accent-hover: #10b981;
+    --person: #60a5fa; --person-bg: #1e3a5f;
+    --org: #a78bfa; --org-bg: #2d1b69;
+    --location: #34d399; --location-bg: #064e3b;
+    --comm: #fbbf24; --comm-bg: #78350f;
+    --financial: #f87171; --financial-bg: #7f1d1d;
+    --id-doc: #f472b6; --id-doc-bg: #831843;
+    --medical: #2dd4bf; --medical-bg: #134e4a;
+    --other: #9ca3af; --other-bg: #374151;
+    --danger: #f87171; --danger-bg: #7f1d1d;
+    --added: #38bdf8; --added-bg: #0c4a6e;
+  }
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not(.light) {
       --bg: #0f172a; --surface: #1e293b; --text: #e2e8f0; --text-secondary: #94a3b8;
-      --border: #334155;
-      --person-bg: #1e3a5f; --org-bg: #2d1b69; --location-bg: #064e3b;
-      --comm-bg: #78350f; --financial-bg: #7f1d1d; --id-doc-bg: #831843;
-      --medical-bg: #134e4a; --other-bg: #374151; --danger-bg: #7f1d1d;
-      --added-bg: #0c4a6e;
+      --border: #334155; --accent: #34d399; --accent-hover: #10b981;
+      --person: #60a5fa; --person-bg: #1e3a5f;
+      --org: #a78bfa; --org-bg: #2d1b69;
+      --location: #34d399; --location-bg: #064e3b;
+      --comm: #fbbf24; --comm-bg: #78350f;
+      --financial: #f87171; --financial-bg: #7f1d1d;
+      --id-doc: #f472b6; --id-doc-bg: #831843;
+      --medical: #2dd4bf; --medical-bg: #134e4a;
+      --other: #9ca3af; --other-bg: #374151;
+      --danger: #f87171; --danger-bg: #7f1d1d;
+      --added: #38bdf8; --added-bg: #0c4a6e;
     }
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -86,7 +107,8 @@
     padding: 1px 4px; border-radius: 4px; cursor: pointer;
     transition: all 0.15s; position: relative; border-bottom: 2px solid;
   }
-  .entity:hover { filter: brightness(0.9); }
+  .entity:hover { filter: brightness(1.15); }
+  :root:not(.dark) .entity:hover { filter: brightness(0.9); }
   .entity.removed {
     text-decoration: line-through; opacity: 0.4;
     border-bottom-style: dashed;
@@ -332,6 +354,40 @@
   .anon-placeholder.ph-ID_DOC { background: var(--id-doc-bg); color: var(--id-doc); }
   .anon-placeholder.ph-MEDICAL { background: var(--medical-bg); color: var(--medical); }
   .anon-placeholder.ph-OTHER { background: var(--other-bg); color: var(--other); }
+  .anon-placeholder.ph-added { border: 1px dashed var(--added); background: var(--added-bg); color: var(--added); }
+  .anon-restored { opacity: 0.4; text-decoration: line-through; font-style: italic; }
+
+  /* Document tabs (bulk mode) */
+  .doc-tabs {
+    display: flex; gap: 0; padding: 0 24px;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    overflow-x: auto; flex-shrink: 0;
+  }
+  .doc-tab {
+    padding: 10px 16px; font-size: 13px; cursor: pointer;
+    border-bottom: 2px solid transparent; white-space: nowrap;
+    display: flex; align-items: center; gap: 6px;
+    color: var(--text-secondary); transition: all 0.15s;
+    user-select: none;
+  }
+  .doc-tab:hover { color: var(--text); background: var(--bg); }
+  .doc-tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  .doc-tab .status-icon { font-size: 12px; }
+  .doc-tab.approved .status-icon { color: var(--accent); }
+  .doc-tab.approved { opacity: 0.7; }
+  .doc-tab.approved.active { opacity: 1; }
+  .bulk-progress {
+    display: flex; align-items: center; gap: 6px; margin-left: auto;
+    font-size: 12px; color: var(--text-secondary); padding: 0 16px;
+    white-space: nowrap;
+  }
+  .bulk-progress .count { font-weight: 600; color: var(--accent); }
+
+  /* Theme toggle */
+  .btn-theme { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border);
+    cursor: pointer; font-size: 14px; background: var(--bg); color: var(--text-secondary);
+    transition: all 0.15s; line-height: 1; }
+  .btn-theme:hover { border-color: var(--accent); color: var(--accent); }
 
   /* Scrollbar */
   ::-webkit-scrollbar { width: 6px; }
@@ -350,6 +406,7 @@
     <div class="stat"><span class="count" id="added-count">0</span>&nbsp;added</div>
   </div>
   <div class="spacer"></div>
+  <button class="btn-theme" id="theme-btn" onclick="toggleTheme()" title="Toggle dark/light theme"></button>
   <button class="btn-split" id="split-btn" onclick="toggleSplitView()" title="Toggle side-by-side view (original vs anonymized)">Split View</button>
   <button class="btn btn-reset" onclick="resetAll()">Reset</button>
   <button class="btn btn-approve" id="approve-btn" onclick="approve()">Approve</button>
@@ -359,6 +416,8 @@
   <span class="instruction-icon">&#x1f4cb;</span>
   <span>Review detected PII entities below. <strong>Click</strong> a highlighted entity to remove it (all matching occurrences removed). <strong>Select text</strong> to add missed entities. Click <strong>Approve</strong> when done.</span>
 </div>
+
+<div class="doc-tabs" id="doc-tabs" style="display:none;"></div>
 
 <div class="main" id="main-container">
   <div class="doc-panel">
@@ -455,9 +514,6 @@
   <div class="approved-card" id="approved-card">
     <div class="checkmark">&#x2705;</div>
     <h2>Review Approved</h2>
-    <p id="approved-msg" style="margin-top:12px;">
-      Decisions file: <code id="approved-filename" style="font-family:monospace; font-size:12px;"></code>
-    </p>
     <p id="approved-saved-hint" style="margin-top:14px; font-size:13px; color:var(--text-secondary);">
       Saved. You can close this tab and tell Claude "continue".
     </p>
@@ -480,12 +536,238 @@ let splitView = false;
 let focusedFamilyIdx = -1;  // index into currentFamilies array
 let currentFamilies = [];   // cached families from last render
 
+// ── Bulk mode state ──
+let bulkSessions = [];      // [{session_id, source_filename, approved, entity_count}]
+let currentBulkIdx = 0;     // index in bulkSessions
+let bulkStates = {};        // localStorage cache: { [session_id]: {removedIndices:[], addedEntities:[]} }
+
 const API_BASE = '';  // same origin
+
+// ============================================================
+// Theme
+// ============================================================
+function initTheme() {
+  const saved = localStorage.getItem('pii-theme');
+  if (saved === 'dark') {
+    document.documentElement.classList.add('dark');
+    document.documentElement.classList.remove('light');
+  } else if (saved === 'light') {
+    document.documentElement.classList.add('light');
+    document.documentElement.classList.remove('dark');
+  }
+  // else: no saved preference → @media prefers-color-scheme handles it
+  updateThemeIcon();
+}
+function isDark() {
+  if (document.documentElement.classList.contains('dark')) return true;
+  if (document.documentElement.classList.contains('light')) return false;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+function toggleTheme() {
+  const goingDark = !isDark();
+  document.documentElement.classList.toggle('dark', goingDark);
+  document.documentElement.classList.toggle('light', !goingDark);
+  localStorage.setItem('pii-theme', goingDark ? 'dark' : 'light');
+  updateThemeIcon();
+}
+function updateThemeIcon() {
+  const btn = document.getElementById('theme-btn');
+  if (btn) btn.textContent = isDark() ? '\u2600\uFE0F' : '\uD83C\uDF19';
+}
+initTheme();
+
+// ============================================================
+// Bulk Mode
+// ============================================================
+
+function isBulkMode() {
+  return bulkSessions.length > 1;
+}
+
+async function initBulk(sessionIds) {
+  console.log('[PII Debug] initBulk: loading', sessionIds.length, 'sessions, standalone=', !!window.STANDALONE_MODE);
+
+  // Standalone bulk: session metadata embedded by generateReviewBulkHtml()
+  if (window.STANDALONE_MODE && window.BULK_SESSIONS_META) {
+    bulkSessions = window.BULK_SESSIONS_META.map((s) => ({
+      session_id: s.session_id,
+      source_filename: s.source_filename || s.session_id,
+      approved: s.approved || false,
+      entity_count: s.entity_count || 0,
+    }));
+  } else {
+    // Server mode: fetch metadata from API
+    try {
+      const resp = await fetch(`${API_BASE}/api/sessions?ids=${sessionIds.join(",")}&_t=${Date.now()}`);
+      const data = await resp.json();
+      bulkSessions = (data.sessions || []).map((s) => ({
+        session_id: s.session_id,
+        source_filename: s.source_filename || s.session_id,
+        approved: s.approved || false,
+        entity_count: s.entity_count || 0,
+      }));
+    } catch (err) {
+      console.error('[PII Debug] initBulk fetch failed:', err);
+      bulkSessions = sessionIds.map((sid) => ({
+        session_id: sid, source_filename: sid, approved: false, entity_count: 0,
+      }));
+    }
+  }
+  currentBulkIdx = 0;
+  renderDocTabs();
+  document.getElementById('doc-tabs').style.display = 'flex';
+  await loadBulkDocument(0);
+}
+
+function renderDocTabs() {
+  const container = document.getElementById('doc-tabs');
+  if (!container || bulkSessions.length === 0) return;
+
+  const approvedCount = bulkSessions.filter((s) => s.approved).length;
+  let html = '';
+  for (let i = 0; i < bulkSessions.length; i++) {
+    const s = bulkSessions[i];
+    const isActive = i === currentBulkIdx;
+    const isApproved = s.approved;
+    const cls = `doc-tab ${isActive ? 'active' : ''} ${isApproved ? 'approved' : ''}`;
+    const statusIcon = isApproved ? '\u2705' : (isActive ? '\u25CF' : '\u25CB');
+    const displayName = s.source_filename || `Doc ${i + 1}`;
+    // Truncate long filenames
+    const shortName = displayName.length > 25 ? displayName.slice(0, 22) + '...' : displayName;
+    html += `<div class="${cls}" onclick="switchDocument(${i})" title="${escapeHtml(displayName)}">`;
+    html += `<span class="status-icon">${statusIcon}</span>`;
+    html += `<span>${escapeHtml(shortName)}</span>`;
+    html += `</div>`;
+  }
+  // Progress indicator
+  html += `<div class="bulk-progress"><span class="count">${approvedCount}</span>/<span>${bulkSessions.length}</span> approved</div>`;
+  container.innerHTML = html;
+}
+
+function saveBulkState() {
+  if (!isBulkMode()) return;
+  const sid = bulkSessions[currentBulkIdx]?.session_id;
+  if (!sid) return;
+  const state = {
+    removedIndices: Array.from(removedIndices),
+    addedEntities: addedEntities.slice(),
+  };
+  bulkStates[sid] = state;
+  try { localStorage.setItem('pii-bulk-' + sid, JSON.stringify(state)); } catch {}
+}
+
+function restoreBulkState(sid) {
+  // Try memory first, then localStorage
+  let state = bulkStates[sid];
+  if (!state) {
+    try {
+      const stored = localStorage.getItem('pii-bulk-' + sid);
+      if (stored) state = JSON.parse(stored);
+    } catch {}
+  }
+  if (state) {
+    removedIndices = new Set(state.removedIndices || []);
+    addedEntities = state.addedEntities || [];
+  } else {
+    removedIndices = new Set();
+    addedEntities = [];
+  }
+}
+
+async function loadBulkDocument(idx) {
+  if (idx < 0 || idx >= bulkSessions.length) return;
+  const s = bulkSessions[idx];
+  currentBulkIdx = idx;
+  SESSION_ID = s.session_id;
+
+  try {
+    let data;
+    // Standalone bulk: review data embedded by generateReviewBulkHtml()
+    if (window.STANDALONE_MODE && window.BULK_REVIEW_DATA && window.BULK_REVIEW_DATA[SESSION_ID]) {
+      data = window.BULK_REVIEW_DATA[SESSION_ID];
+      console.log('[PII Debug] loadBulkDocument: using embedded data for', SESSION_ID);
+    } else {
+      // Server mode: fetch from API
+      const resp = await fetch(`${API_BASE}/api/review/${SESSION_ID}?_t=${Date.now()}`);
+      data = await resp.json();
+    }
+    if (data.error) {
+      document.getElementById('doc-content').textContent = data.error;
+      return;
+    }
+    originalText = data.original_text || '';
+    originalHtml = data.original_html || '';
+    anonymizedText = data.anonymized_text || '';
+    entities = (data.entities || []).map((e, i) => ({ ...e, idx: i, verified: true }));
+    formatRuns = [];
+    blockMap = [];
+    if (originalHtml) parseHtmlFormatting(originalHtml);
+    if (!anonymizedText) {
+      document.getElementById('split-btn').style.display = 'none';
+    } else {
+      document.getElementById('split-btn').style.display = '';
+    }
+
+    restoreBulkState(SESSION_ID);
+    if (data.approved) s.approved = true;
+
+    render();
+    renderDocTabs();
+
+    const origPane = document.querySelector('.doc-pane-orig');
+    if (origPane) origPane.scrollTop = 0;
+
+    console.log('[PII Debug] loadBulkDocument:', idx, s.source_filename, 'entities=' + entities.length);
+  } catch (err) {
+    console.error('[PII Debug] loadBulkDocument FAILED:', err);
+    document.getElementById('doc-content').textContent = 'Failed to load: ' + err.message;
+  }
+}
+
+async function switchDocument(idx) {
+  if (idx === currentBulkIdx) return;
+  // Save current state before switching
+  saveBulkState();
+  await loadBulkDocument(idx);
+}
+
+function bulkAdvanceToNext() {
+  // Find next unapproved document
+  for (let i = 0; i < bulkSessions.length; i++) {
+    const nextIdx = (currentBulkIdx + 1 + i) % bulkSessions.length;
+    if (!bulkSessions[nextIdx].approved) {
+      switchDocument(nextIdx);
+      return;
+    }
+  }
+  // All approved — show bulk complete overlay
+  showBulkCompleteOverlay();
+}
+
+function showBulkCompleteOverlay() {
+  const hint = document.getElementById('approved-saved-hint');
+  if (hint) {
+    hint.textContent = `All ${bulkSessions.length} documents approved! Tell Claude "all approved" or "continue".`;
+  }
+  document.getElementById('approved-overlay').classList.add('visible');
+}
 
 async function init() {
   console.log('[PII Debug] review_ui.html v2.1 — init() started, STANDALONE_MODE=', !!window.STANDALONE_MODE);
 
-  // Standalone mode: data is embedded in the HTML by generateReviewHtml()
+  // Bulk mode check FIRST (before standalone single) — bulk can also be standalone
+  const urlParams = new URLSearchParams(window.location.search);
+  const bulkFromUrl = urlParams.get('sessions');
+  const bulkSessionIds = window.BULK_SESSIONS
+    || (bulkFromUrl ? bulkFromUrl.split(',').filter(s => s) : null);
+
+  if (bulkSessionIds && bulkSessionIds.length > 1) {
+    console.log('[PII Debug] Bulk mode detected:', bulkSessionIds.length, 'sessions');
+    await initBulk(bulkSessionIds);
+    return;
+  }
+
+  // Standalone single mode: data is embedded in the HTML by generateReviewHtml()
   if (window.STANDALONE_MODE && window.REVIEW_DATA) {
     const data = window.REVIEW_DATA;
     SESSION_ID = data.session_id || 'standalone';
@@ -500,7 +782,7 @@ async function init() {
     return;
   }
 
-  // Server mode: fetch from API
+  // Server mode (single document): fetch from API
   const parts = window.location.pathname.split('/review/');
   SESSION_ID = parts[1] || '';
   if (!SESSION_ID) { document.getElementById('doc-content').textContent = 'No session ID'; return; }
@@ -1167,9 +1449,7 @@ async function approve() {
       console.log('[PII Debug] Standalone POST status:', r.status, r.ok);
       if (r.ok) {
         const hint = document.getElementById('approved-saved-hint');
-        if (hint) hint.textContent = 'Approval sent to PII Shield server. Tell Claude "continue" or "approved".';
-        const fn = document.getElementById('approved-filename');
-        if (fn) fn.textContent = '(sent to server)';
+        if (hint) hint.textContent = 'Approval sent to PII Shield. Tell Claude "continue" or "approved".';
         document.getElementById('approved-overlay').classList.add('visible');
         return;
       }
@@ -1185,9 +1465,7 @@ async function approve() {
         // Give the GET a moment to land, then show success
         await new Promise(r => setTimeout(r, 500));
         const hint = document.getElementById('approved-saved-hint');
-        if (hint) hint.textContent = 'Approval sent to PII Shield server. Tell Claude "continue" or "approved".';
-        const fn = document.getElementById('approved-filename');
-        if (fn) fn.textContent = '(sent to server)';
+        if (hint) hint.textContent = 'Approval sent to PII Shield. Tell Claude "continue" or "approved".';
         document.getElementById('approved-overlay').classList.add('visible');
         return;
       } catch (e) { console.warn('[PII Debug] Standalone GET fallback failed:', e); }
@@ -1201,8 +1479,6 @@ async function approve() {
           'Open review in browser</a> and click Approve there. ' +
           'Then tell Claude "approved".';
       }
-      const fn = document.getElementById('approved-filename');
-      if (fn) fn.textContent = '';
       document.getElementById('approved-overlay').classList.add('visible');
       btn.disabled = false;
       btn.textContent = 'Approve';
@@ -1221,8 +1497,6 @@ async function approve() {
       URL.revokeObjectURL(a.href);
       const hint = document.getElementById('approved-saved-hint');
       if (hint) hint.textContent = 'Saved to Downloads. If in Cowork, move the file to the workspace folder. Then tell Claude "continue".';
-      const fn = document.getElementById('approved-filename');
-      if (fn) fn.textContent = fileName;
       document.getElementById('approved-overlay').classList.add('visible');
       return;
     } catch (err) {
@@ -1258,10 +1532,28 @@ async function approve() {
     console.warn('[PII Debug] Approve GET fallback failed:', err);
   }
 
+  // Bulk mode: mark current doc as approved, save state, advance
+  if (isBulkMode()) {
+    bulkSessions[currentBulkIdx].approved = true;
+    saveBulkState();
+    renderDocTabs();
+
+    const allApproved = bulkSessions.every((s) => s.approved);
+    if (allApproved) {
+      showBulkCompleteOverlay();
+    } else {
+      // Brief feedback then auto-advance
+      showToast(`Approved "${bulkSessions[currentBulkIdx].source_filename}"`, 'restore');
+      btn.disabled = false;
+      btn.textContent = 'Approve';
+      setTimeout(() => bulkAdvanceToNext(), 600);
+    }
+    return;
+  }
+
+  // Single mode: show overlay
   const hint = document.getElementById('approved-saved-hint');
-  if (hint) hint.textContent = 'Approval sent to PII Shield server. Tell Claude "continue" or "approved".';
-  const fn = document.getElementById('approved-filename');
-  if (fn) fn.textContent = '(sent to server)';
+  if (hint) hint.textContent = 'Approval sent to PII Shield. Tell Claude "continue" or "approved".';
   document.getElementById('approved-overlay').classList.add('visible');
 }
 
@@ -1312,19 +1604,52 @@ const PH_GROUP = {
 function renderAnonymizedPanel() {
   const container = document.getElementById('doc-content-anon');
   if (!anonymizedText) { container.textContent = 'Anonymized text not available.'; return; }
+  const hasHtml = formatRuns.length > 0 || blockMap.length > 0;
+  container.classList.toggle('html-mode', hasHtml);
 
   // Parse placeholders like <ORG_1>, <PERSON_2a> and colorize them
   const paragraphs = anonymizedText.split('\n');
   let html = '';
-  for (const para of paragraphs) {
-    html += '<p>' + escapeHtml(para).replace(/&lt;(\w+?)&gt;/g, (match, tag) => {
+  for (let pi = 0; pi < paragraphs.length; pi++) {
+    const para = paragraphs[pi];
+    const tag = (hasHtml && blockMap[pi] && blockMap[pi].tag) || 'p';
+    const blockTag = tag;
+    html += `<${blockTag}>` + escapeHtml(para).replace(/&lt;(\w+?)&gt;/g, (m, phTag) => {
       // Extract base type from tag like "ORG_1", "PERSON_2a", "D1_ORG_1"
-      const stripped = tag.replace(/^D\d+_/, '');  // remove prefix like D1_
+      const stripped = phTag.replace(/^D\d+_/, '');  // remove prefix like D1_
       const baseType = stripped.replace(/_\d+\w*$/, '');  // ORG, PERSON, etc.
       const group = PH_GROUP[baseType] || 'OTHER';
-      return `<span class="anon-placeholder ph-${group}">&lt;${tag}&gt;</span>`;
-    }) + '</p>';
+      return `<span class="anon-placeholder ph-${group}">&lt;${phTag}&gt;</span>`;
+    }) + `</${blockTag}>`;
   }
+
+  // Sync removed entities: replace placeholder back with original text (strikethrough)
+  for (const e of entities) {
+    if (!removedIndices.has(e.idx)) continue;
+    if (!e.placeholder) continue;
+    const escapedPh = `&lt;${escapeHtml(e.placeholder)}&gt;`;
+    // Find the colored <span> wrapping this placeholder and replace with restored text
+    const phRegex = new RegExp(
+      `<span class="anon-placeholder[^"]*">${escapedPh.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</span>`,
+      'g'
+    );
+    html = html.replace(phRegex, `<span class="anon-restored">${escapeHtml(e.text)}</span>`);
+  }
+
+  // Show user-added entities as placeholders in the anonymized panel
+  // (they aren't in anonymizedText yet since it was generated before review)
+  if (addedEntities.length > 0) {
+    for (const ae of addedEntities) {
+      const escaped = escapeHtml(ae.text);
+      if (!escaped) continue;
+      const group = PH_GROUP[ae.type] || 'OTHER';
+      const placeholder = `<span class="anon-placeholder ph-${group} ph-added">&lt;${ae.type}&gt;</span>`;
+      const safeText = escaped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      html = html.replace(new RegExp('(?<=>)([^<]*?)(' + safeText + ')', 'g'),
+        (m, before, match) => before + placeholder);
+    }
+  }
+
   container.innerHTML = html;
 }
 
