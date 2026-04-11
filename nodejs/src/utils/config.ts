@@ -51,6 +51,46 @@ export function _resetDataDirCache(): void {
   _cachedDataDirSource = null;
 }
 
+/**
+ * Re-pin the data directory based on a file path from a tool call.
+ * Only acts when the current data dir is a known-generic fallback
+ * (~/Downloads or ~) that likely doesn't reflect the real workspace.
+ */
+export function setWorkspaceHint(filePath: string): void {
+  if (!_cachedDataDir) return; // not yet initialized, getDataDir() will handle it
+
+  // Only re-pin from generic fallback locations
+  const home = os.homedir();
+  const genericRoots = [
+    path.join(home, "Downloads"),
+    home,
+  ];
+  const currentRoot = path.dirname(_cachedDataDir); // strip ".pii_shield"
+  if (!genericRoots.some(g => path.resolve(g) === path.resolve(currentRoot))) return;
+
+  // Derive workspace from the file path
+  const workspace = path.dirname(path.resolve(filePath));
+  if (!workspace || path.resolve(workspace) === path.resolve(currentRoot)) return;
+
+  // Verify writable
+  const newCacheDir = path.join(workspace, ".pii_shield");
+  try {
+    fs.mkdirSync(newCacheDir, { recursive: true });
+    const probe = path.join(newCacheDir, `.write_probe_${process.pid}`);
+    fs.writeFileSync(probe, "x");
+    try { fs.unlinkSync(probe); } catch { /* leftover probe is harmless */ }
+  } catch {
+    return; // not writable, keep current
+  }
+
+  // Re-pin
+  const oldDir = _cachedDataDir;
+  stampCacheDir(newCacheDir);
+  _cachedDataDir = newCacheDir;
+  _cachedDataDirSource = `workspace hint from file_path: ${workspace}`;
+  console.error(`[config] re-pinned data dir to ${newCacheDir} (was ${oldDir})`);
+}
+
 /** Source-of-truth description for the currently resolved data dir. */
 export function getDataDirSource(): string {
   // Ensure resolution has run at least once.
@@ -97,10 +137,12 @@ function getDataDir(): string {
   if (ws) candidates.push(ws);
 
   // 3b. Desktop / dev fallbacks.
+  //     process.cwd() first — on desktop Claude Code this IS the workspace.
+  //     ~/Downloads demoted to fallback to avoid polluting the user's Downloads.
   const home = os.homedir();
+  candidates.push(process.cwd());
   candidates.push(path.join(home, "Downloads"));
   candidates.push(home);
-  candidates.push(process.cwd());
 
   // 3c. Marketplace launcher fallback. Inside Cowork this is ephemeral
   // (`.claude/plugins/data/...`) but on real desktop it's the right place.

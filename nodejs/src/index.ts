@@ -11,7 +11,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { VERSION, PATHS, isCowork, findCoworkWorkspace, getDataDirSource, displayCacheDir } from "./utils/config.js";
+import { VERSION, PATHS, isCowork, findCoworkWorkspace, getDataDirSource, displayCacheDir, setWorkspaceHint } from "./utils/config.js";
 import { PIIEngine } from "./engine/pii-engine.js";
 import { SUPPORTED_ENTITIES } from "./engine/entity-types.js";
 import { getNerError, getNerStats, getNerStatus } from "./engine/ner-backend.js";
@@ -533,6 +533,10 @@ async function reanonymizeWithReview(
 type ToolArgs = Record<string, unknown>;
 
 async function handleToolCall(name: string, args: ToolArgs): Promise<string> {
+  // Workspace hint: re-pin data dir from file paths if currently in a generic fallback
+  const wsHint = (args.file_path || args.output_path) as string | undefined;
+  if (wsHint) setWorkspaceHint(wsHint);
+
   const engine = PIIEngine.getInstance();
 
   switch (name) {
