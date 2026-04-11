@@ -33,6 +33,9 @@ const NER_DEP_PACKAGES = [
 const LABEL_MAP: Record<string, string> = {
   person: "PERSON",
   organization: "ORGANIZATION",
+  company: "ORGANIZATION",
+  "law firm": "ORGANIZATION",
+  bank: "ORGANIZATION",
   location: "LOCATION",
   "political group": "NRP",
   email: "EMAIL_ADDRESS",
@@ -58,6 +61,9 @@ const LABEL_MAP: Record<string, string> = {
 const NER_LABELS = [
   "person",
   "organization",
+  "company",
+  "law firm",
+  "bank",
   "location",
   "political group",
   "address",

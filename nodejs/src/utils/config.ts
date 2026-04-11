@@ -337,10 +337,10 @@ export function findCoworkWorkspace(): string | null {
 
 export const ENV = {
   /** Minimum confidence score for pattern-based detections (0.0–1.0) */
-  PII_MIN_SCORE: parseFloat(process.env.PII_MIN_SCORE || "0.40"),
+  PII_MIN_SCORE: parseFloat(process.env.PII_MIN_SCORE || "0.30"),
 
   /** Minimum confidence score for NER detections (0.0–1.0) */
-  PII_NER_THRESHOLD: parseFloat(process.env.PII_NER_THRESHOLD || "0.40"),
+  PII_NER_THRESHOLD: parseFloat(process.env.PII_NER_THRESHOLD || "0.30"),
 
   /** GLiNER model name (for ONNX export reference) */
   PII_GLINER_MODEL: process.env.PII_GLINER_MODEL || "knowledgator/gliner-pii-base-v1.0",

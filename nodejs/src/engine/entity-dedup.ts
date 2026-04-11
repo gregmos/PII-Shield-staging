@@ -135,6 +135,34 @@ function isAlphaNum(ch: string): boolean {
   );
 }
 
+// ── 2.5. ORG boundary expansion ─────────────────────────────────────────────
+// If NER found "Deutsche Bank" as ORGANIZATION but the following word is a
+// corporate suffix like "AG", expand the span to include it.
+
+const ORG_SUFFIXES = new Set([
+  "ltd", "limited", "inc", "incorporated", "corp", "corporation",
+  "co", "company", "llc", "llp", "lp", "plc", "ag", "sa", "sarl",
+  "gmbh", "bv", "nv", "pty", "pte", "srl", "spa", "ab", "as",
+  "oy", "oyj", "kk", "se", "kg", "ohg", "ev", "eg",
+]);
+
+export function expandOrgBoundaries(text: string, entities: DetectedEntity[]): DetectedEntity[] {
+  for (const e of entities) {
+    if (e.type !== "ORGANIZATION") continue;
+    let pos = e.end;
+    while (pos < text.length && text[pos] === " ") pos++;
+    let wordEnd = pos;
+    while (wordEnd < text.length && /[a-zA-Z.]/.test(text[wordEnd])) wordEnd++;
+    if (wordEnd === pos) continue;
+    const nextWord = text.slice(pos, wordEnd).replace(/\.$/, "");
+    if (nextWord.length > 0 && ORG_SUFFIXES.has(nextWord.toLowerCase())) {
+      e.end = wordEnd;
+      e.text = text.slice(e.start, e.end);
+    }
+  }
+  return entities;
+}
+
 // ── 3. Clean boundaries (snap + filter) ──────────────────────────────────────
 
 export function cleanBoundaries(text: string, entities: DetectedEntity[]): DetectedEntity[] {

@@ -6,7 +6,7 @@
 import { ENV } from "../utils/config.js";
 import { SUPPORTED_ENTITIES } from "./entity-types.js";
 import { runPatternRecognizers, type DetectedEntity } from "./pattern-recognizers.js";
-import { deduplicateOverlaps, cleanBoundaries, assignPlaceholders, type AnonymizeResult } from "./entity-dedup.js";
+import { deduplicateOverlaps, expandOrgBoundaries, cleanBoundaries, assignPlaceholders, type AnonymizeResult } from "./entity-dedup.js";
 import { initNer, isNerReady, runNer, nerLog } from "./ner-backend.js";
 import { logServer } from "../audit/audit-logger.js";
 
@@ -16,8 +16,8 @@ let _instance: PIIEngine | null = null;
 // Reduced from 4000 → 2000 to keep each _gliner.inference() call under ~20s,
 // so that a single anonymize_next_chunk (document chunk → 1-2 NER sub-chunks)
 // fits within Cowork's 60s tool timeout.
-const NER_CHUNK_SIZE = 2000;
-const NER_CHUNK_OVERLAP = 200;
+const NER_CHUNK_SIZE = 800;
+const NER_CHUNK_OVERLAP = 100;
 
 // ── Verbatim propagation (Phase 5 Fix A) ─────────────────────────────────────
 // Types eligible for word-boundary propagation across the full document.
@@ -306,6 +306,10 @@ export class PIIEngine {
     let allResults = [...patternResults, ...nerResults];
     allResults = allResults.filter((e) => e.score >= minScore);
     logServer(`[Detect] step 3 done: ${allResults.length} after filter`);
+
+    // 3.5. Expand ORG boundaries to include trailing suffixes (Ltd, Inc, GmbH...)
+    logServer(`[Detect] step 3.5: expandOrgBoundaries...`);
+    allResults = expandOrgBoundaries(text, allResults);
 
     // 4. Deduplicate overlapping spans
     logServer(`[Detect] step 4: dedup...`);
