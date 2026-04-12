@@ -1,5 +1,6 @@
 node_modules/
 dist/
+src/local-app/
 *.onnx
 pii_shield_tokenizer__*/
 pii_shield_model__*.onnx

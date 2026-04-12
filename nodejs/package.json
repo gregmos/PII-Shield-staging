@@ -10,7 +10,9 @@
     "dev": "npx tsx src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "build:plugin": "node plugin/build-plugin.mjs"
+    "build:plugin": "node plugin/build-plugin.mjs",
+    "local": "npx tsx src/local-app/server.ts",
+    "local:watch": "npx tsx watch src/local-app/server.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

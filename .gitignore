@@ -27,5 +27,8 @@ desktop.ini
 # Test artifacts
 *.output
 
+# Local testing app (not for distribution)
+nodejs/src/local-app/
+
 # Old versions
 pii-shield-v5.3.*.mcpb
