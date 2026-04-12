@@ -16,34 +16,56 @@ export const VERSION = "2.0.0";
  * Resolution order:
  * 1. `PII_SHIELD_DATA_DIR` — explicit power-user override.
  * 2. **Marker lookup** — BFS-search for a previously-dropped
- *    `WORKSPACE_MARKER_NAME` file via `findMarker()`. The marker lives next
- *    to a previously-successful cache (`<dir>/.pii_shield_workspace_marker`
- *    sibling of `<dir>/.pii_shield/`). Once we find it, that's our cache
- *    root, no further detection needed. Survives across sessions, across
- *    Cowork session ids, and travels with the workspace folder if the user
- *    moves it. This is the load-bearing path for everything after the very
- *    first run.
+ *    `WORKSPACE_MARKER_NAME` file via `findMarker()`. The marker lives
+ *    INSIDE the cache dir (`<workspace>/.pii_shield/.pii_shield_workspace_marker`).
+ *    `bfs-finder.ts` has a special exception to descend into `.pii_shield`
+ *    directories. Once we find the marker, its parent IS the cache dir —
+ *    no further detection needed. Survives across sessions, across Cowork
+ *    session ids, and travels with the workspace folder if the user moves it.
  * 3. **First-run pick** — no marker yet. Walk known persistent roots in
  *    priority order, pick the first writable one:
  *      a. `findCoworkWorkspace()` — Cowork workspace mount (the user's
  *         actual host-visible folder).
- *      b. `~/Downloads`, `~`, `process.cwd()` — desktop / dev installs.
+ *      b. `process.cwd()`, `~/Downloads`, `~` — desktop / dev installs.
  *      c. `CLAUDE_PLUGIN_DATA` — marketplace launcher fallback.
  * 4. Legacy `~/.pii_shield` — last resort.
  *
- * After picking (steps 3 or 4), the marker file is dropped next to the
- * cache so subsequent runs short-circuit via step 2. README.txt + .gitignore
- * are also written on first create.
+ * After picking (steps 3 or 4), the marker file is dropped inside the
+ * cache dir so subsequent runs short-circuit via step 2. README.txt +
+ * .gitignore are also written on first create. Any stale probe/marker
+ * files in the workspace root are cleaned up.
  */
 let _cachedDataDir: string | null = null;
 let _cachedDataDirSource: string | null = null;
 
 /**
  * Marker filename used to recognise a previously-cached workspace.
- * Findable by `findMarker()` (BFS over `/home`, `/mnt`, `/media`, and in
- * Cowork also `/sessions/<sid>/mnt/`). See `bfs-finder.ts:linuxBfsRoots`.
+ * Lives INSIDE `.pii_shield/` (not as a sibling) to keep workspace root clean.
+ * Findable by `findMarker()` — `bfs-finder.ts` has a `.pii_shield` exception
+ * so BFS descends into it despite the dot prefix.
  */
 export const WORKSPACE_MARKER_NAME = ".pii_shield_workspace_marker";
+
+/**
+ * Remove stale probe/marker files from a workspace directory.
+ * Called after successful cache dir resolution to clean up any leftover
+ * write probes, path-resolution markers, and old workspace markers.
+ */
+function cleanupStaleFiles(workspaceDir: string): void {
+  try {
+    const entries = fs.readdirSync(workspaceDir);
+    for (const name of entries) {
+      if (
+        name.startsWith(".pii_shield_probe_") ||
+        name.startsWith(".write_probe_") ||
+        name.startsWith(".pii_marker_") ||
+        name === WORKSPACE_MARKER_NAME // old sibling marker (migrated inside .pii_shield/)
+      ) {
+        try { fs.unlinkSync(path.join(workspaceDir, name)); } catch { /* best effort */ }
+      }
+    }
+  } catch { /* best effort — dir might not be readable */ }
+}
 
 /** Reset the memoized data-dir choice (for tests). */
 export function _resetDataDirCache(): void {
@@ -86,6 +108,7 @@ export function setWorkspaceHint(filePath: string): void {
   // Re-pin
   const oldDir = _cachedDataDir;
   stampCacheDir(newCacheDir);
+  cleanupStaleFiles(workspace); // workspace root
   _cachedDataDir = newCacheDir;
   _cachedDataDirSource = `workspace hint from file_path: ${workspace}`;
   console.error(`[config] re-pinned data dir to ${newCacheDir} (was ${oldDir})`);
@@ -118,10 +141,11 @@ function getDataDir(): string {
     // in Cowork, blocking the MCP `initialize` handshake → zero tools.
     const found = findMarker(WORKSPACE_MARKER_NAME, 2);
     if (found) {
-      const workspaceDir = path.dirname(found);
-      const cacheDir = path.join(workspaceDir, ".pii_shield");
+      // Marker lives INSIDE .pii_shield/, so its parent IS the cache dir.
+      const cacheDir = path.dirname(found);
       try {
         fs.mkdirSync(cacheDir, { recursive: true });
+        cleanupStaleFiles(path.dirname(cacheDir)); // workspace root
         _cachedDataDir = cacheDir;
         _cachedDataDirSource = `marker found at ${found}`;
         return cacheDir;
@@ -163,6 +187,7 @@ function getDataDir(): string {
       try { fs.unlinkSync(probe); } catch { /* leftover probe is harmless */ }
       // Drop the marker + README + .gitignore on first successful create.
       stampCacheDir(cacheDir);
+      cleanupStaleFiles(root); // workspace root
       _cachedDataDir = cacheDir;
       _cachedDataDirSource = `first-run pick: ${root}`;
       return cacheDir;
@@ -179,17 +204,14 @@ function getDataDir(): string {
 
 /**
  * Drop the workspace marker, README, and .gitignore into a freshly-created
- * cache dir. The marker lives at `<workspace>/.pii_shield_workspace_marker`
- * (sibling of the `.pii_shield/` cache itself), so future runs find it via
- * BFS without descending into the cache subtree.
+ * cache dir. The marker lives INSIDE `.pii_shield/` to keep the workspace
+ * root clean. `bfs-finder.ts` has a special exception to descend into
+ * `.pii_shield` directories so the marker is still discoverable via BFS.
  */
 function stampCacheDir(cacheDir: string): void {
-  // Marker — sibling of the cache, not inside it. cacheDir ends with
-  // ".pii_shield" (or the marketplace fallback "pii-shield-inline"); the
-  // marker goes one level up.
+  // Marker INSIDE the cache dir — keeps workspace root clean.
   try {
-    const workspaceDir = path.dirname(cacheDir);
-    const markerPath = path.join(workspaceDir, WORKSPACE_MARKER_NAME);
+    const markerPath = path.join(cacheDir, WORKSPACE_MARKER_NAME);
     if (!fs.existsSync(markerPath)) {
       fs.writeFileSync(
         markerPath,
@@ -202,6 +224,9 @@ function stampCacheDir(cacheDir: string): void {
         "utf-8",
       );
     }
+    // Migration: remove old sibling marker (pre-v2.0.1 placed it at workspace root)
+    const oldMarker = path.join(path.dirname(cacheDir), WORKSPACE_MARKER_NAME);
+    try { if (fs.existsSync(oldMarker)) fs.unlinkSync(oldMarker); } catch { /* best effort */ }
   } catch { /* best effort */ }
 
   // README inside the cache.
@@ -215,7 +240,7 @@ function stampCacheDir(cacheDir: string): void {
         "This directory holds the GLiNER NER model (~665 MB ONNX) and\n" +
         "runtime dependencies (onnxruntime-node, @xenova/transformers,\n" +
         "gliner) used by the PII Shield Claude Code plugin.\n\n" +
-        "A sibling marker file (.pii_shield_workspace_marker, one level up)\n" +
+        "A marker file (.pii_shield_workspace_marker) inside this directory\n" +
         "lets the plugin re-discover this cache on subsequent runs via the\n" +
         "same BFS marker mechanism that powers `resolve_path` / `find_file`.\n\n" +
         "Safe to delete. If you do, the plugin will re-download the model\n" +

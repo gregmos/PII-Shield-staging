@@ -176,7 +176,82 @@ function isInStoplist(text: string): boolean {
  * Filter false positives from entity list.
  * Mutates nothing — returns a new filtered array.
  */
-export function filterFalsePositives(entities: DetectedEntity[]): DetectedEntity[] {
+// ── Jurisdiction context — LOCATION in governing law clauses should NOT be anonymized ──
+
+const JURISDICTION_TYPES = new Set(["LOCATION", "NRP", "ADDRESS", "ORGANIZATION"]);
+
+// Optional trailing article before the location name
+const THE = `(?:the\\s+)?`;
+
+// Patterns that appear BEFORE the location (look-behind window)
+const JURISDICTION_BEFORE = [
+  new RegExp(`\\bgoverned\\s+by\\s+${THE}(?:laws?\\s+of\\s+)?${THE}$`, "i"),
+  new RegExp(`\\blaws?\\s+of\\s+${THE}$`, "i"),
+  new RegExp(`\\bcourts?\\s+of\\s+${THE}$`, "i"),
+  new RegExp(`\\bjurisdiction\\s+of\\s+${THE}$`, "i"),
+  new RegExp(`\\bsubject\\s+to\\s+${THE}(?:laws?\\s+of\\s+)?${THE}$`, "i"),
+  new RegExp(`\\bunder\\s+${THE}(?:laws?\\s+of\\s+)?${THE}$`, "i"),
+  new RegExp(`\\bin\\s+accordance\\s+with\\s+${THE}(?:laws?\\s+of\\s+)?${THE}$`, "i"),
+  new RegExp(`\\bconstrued\\s+(?:in\\s+accordance\\s+with|under)\\s+${THE}(?:laws?\\s+of\\s+)?${THE}$`, "i"),
+  new RegExp(`\\bapplicable\\s+law\\s+(?:of|in)\\s+${THE}$`, "i"),
+  new RegExp(`\\bexclusive\\s+jurisdiction\\s+of\\s+${THE}$`, "i"),
+  new RegExp(`\\bcompetent\\s+courts?\\s+(?:of|in)\\s+${THE}$`, "i"),
+  new RegExp(`\\bregistered\\s+in\\s+${THE}$`, "i"),
+  new RegExp(`\\bincorporated\\s+(?:in|under\\s+the\\s+laws?\\s+of)\\s+${THE}$`, "i"),
+  /\bresolved\s+by\s+$/i,
+  /\bpursuant\s+to\s+(?:the\s+)?(?:laws?\s+of\s+)?(?:the\s+)?$/i,
+  // Arbitration / venue / forum / seat
+  new RegExp(`\\barbitration\\s+(?:shall\\s+)?(?:take\\s+place|be\\s+held|be\\s+conducted)\\s+in\\s+${THE}$`, "i"),
+  new RegExp(`\\bseat\\s+of\\s+(?:the\\s+)?arbitration\\s+(?:shall\\s+be|is)\\s+${THE}$`, "i"),
+  new RegExp(`\\bvenue\\s+(?:shall\\s+be|is|for)\\s+(?:in\\s+)?${THE}$`, "i"),
+  new RegExp(`\\bforum\\s+(?:shall\\s+be|is|for\\s+\\w+\\s+shall\\s+be)\\s+${THE}$`, "i"),
+  new RegExp(`\\bexclusive\\s+(?:venue|forum)\\s+(?:shall\\s+be|is|for)\\s+(?:in\\s+)?${THE}$`, "i"),
+  // "Governing Law:" / "Applicable Law:" with colon
+  /\b(?:governing|applicable)\s+law\s*:\s*$/i,
+  // Continuation: "England and <Wales>" — jurisdiction chain via "and"/"or"
+  /\b(?:courts?|laws?|jurisdiction|legislation|arbitration|venue|forum)\b.*\b(?:and|or)\s+$/i,
+];
+
+// Patterns that appear AFTER the location (look-ahead window)
+const JURISDICTION_AFTER = [
+  /^\s*(?:law|laws|legislation|courts?|jurisdiction|legal\s+system)/i,
+  /^\s*(?:courts?\s+shall\s+have)/i,
+  /^\s*(?:courts?\s+of\s+competent\s+jurisdiction)/i,
+  /^\s*(?:courts?\s+located\s+in)/i,
+];
+
+const JURISDICTION_WINDOW = 80; // chars to look before/after the entity
+
+// Entity text that ENDS with a jurisdiction term (e.g. "German courts", "English law")
+// Must END with the term to avoid false positives like "Law Firm of Johnson"
+const JURISDICTION_INLINE = /\b(?:courts?|laws?|legislation|jurisdiction|legal\s+system|tribunal)$/i;
+
+function isJurisdictionContext(entity: DetectedEntity, text: string, allEntities?: DetectedEntity[]): boolean {
+  if (!JURISDICTION_TYPES.has(entity.type)) return false;
+
+  const before = text.slice(Math.max(0, entity.start - JURISDICTION_WINDOW), entity.start);
+  const after = text.slice(entity.end, Math.min(text.length, entity.end + JURISDICTION_WINDOW));
+
+  // Check before-context
+  for (const re of JURISDICTION_BEFORE) {
+    if (re.test(before)) return true;
+  }
+  // Check after-context
+  for (const re of JURISDICTION_AFTER) {
+    if (re.test(after)) return true;
+  }
+  // Check if entity text itself contains jurisdiction terms (e.g. "German courts")
+  if (JURISDICTION_INLINE.test(entity.text)) return true;
+
+  return false;
+}
+
+/** Remove entities that are in jurisdiction context (for use after propagation) */
+export function filterJurisdictionEntities(entities: DetectedEntity[], text: string): DetectedEntity[] {
+  return entities.filter((e) => !isJurisdictionContext(e, text));
+}
+
+export function filterFalsePositives(entities: DetectedEntity[], text?: string): DetectedEntity[] {
   // Collect confirmed high-score texts for cross-reference
   const confirmedTexts = new Set<string>();
   for (const e of entities) {
@@ -194,6 +269,10 @@ export function filterFalsePositives(entities: DetectedEntity[]): DetectedEntity
     const txt = e.text;
     const etype = e.type;
     const normTxt = txt.toLowerCase().trim();
+
+    // Rule J: Jurisdiction context — keep LOCATIONs in governing law clauses
+    // (they affect legal interpretation and must NOT be anonymized)
+    if (text && isJurisdictionContext(e, text)) continue;
 
     // Rule 0: Stop-list
     if (isInStoplist(txt)) continue;

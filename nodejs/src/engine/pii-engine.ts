@@ -7,6 +7,7 @@ import { ENV } from "../utils/config.js";
 import { SUPPORTED_ENTITIES } from "./entity-types.js";
 import { runPatternRecognizers, type DetectedEntity } from "./pattern-recognizers.js";
 import { deduplicateOverlaps, expandOrgBoundaries, cleanBoundaries, assignPlaceholders, type AnonymizeResult } from "./entity-dedup.js";
+import { filterJurisdictionEntities } from "./false-positive-filter.js";
 import { initNer, isNerReady, runNer, nerLog } from "./ner-backend.js";
 import { logServer } from "../audit/audit-logger.js";
 
@@ -326,6 +327,9 @@ export class PIIEngine {
     allResults = propagateVerbatimMatches(text, allResults);
     logServer(`[Detect] step 6a: final dedup...`);
     allResults = deduplicateOverlaps(allResults);
+
+    // 7. Re-filter jurisdiction entities (propagation may re-add them)
+    allResults = filterJurisdictionEntities(allResults, text);
 
     logServer(`[Detect] DONE: ${allResults.length} entities`);
     return allResults;

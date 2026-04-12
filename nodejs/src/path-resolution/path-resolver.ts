@@ -81,8 +81,15 @@ export function resolvePath(
 
   const hostDir = path.dirname(found);
 
-  // Clean up marker
+  // Clean up marker + any other stale .pii_marker_* files in the same dir
   try { fs.unlinkSync(found); } catch { /* */ }
+  try {
+    for (const f of fs.readdirSync(hostDir)) {
+      if (f.startsWith(".pii_marker_") && f !== path.basename(found)) {
+        try { fs.unlinkSync(path.join(hostDir, f)); } catch { /* */ }
+      }
+    }
+  } catch { /* */ }
 
   // Cache the mapping
   _dirCache[cacheKey] = hostDir;

@@ -167,7 +167,7 @@ export function expandOrgBoundaries(text: string, entities: DetectedEntity[]): D
 
 export function cleanBoundaries(text: string, entities: DetectedEntity[]): DetectedEntity[] {
   entities = snapWordBoundaries(text, entities);
-  entities = filterFalsePositives(entities);
+  entities = filterFalsePositives(entities, text);
   return entities;
 }
 

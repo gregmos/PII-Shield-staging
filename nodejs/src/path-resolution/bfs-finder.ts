@@ -34,7 +34,7 @@ export function bfsFind(root: string, targetName: string, maxDepth = 6): string 
         if (
           entry.isDirectory() &&
           depth < maxDepth &&
-          !entry.name.startsWith(".") &&
+          (!entry.name.startsWith(".") || entry.name === ".pii_shield") &&
           !BFS_SKIP.has(entry.name)
         ) {
           queue.push({ dir: fullPath, depth: depth + 1 });
