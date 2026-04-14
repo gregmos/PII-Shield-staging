@@ -415,3 +415,26 @@ export function filterFalsePositives(entities: DetectedEntity[], text?: string):
     (e) => !highFreq.has(e.text.toLowerCase().trim()) || !NAMED_ENTITY_TYPES.has(e.type),
   );
 }
+
+// ── Filter garbage NER entities (chunking artifacts, contract boilerplate) ────
+const BOILERPLATE_SUBJECT_RE = /^(Agency|Client|Parties?|The)\b/i;
+const BOILERPLATE_VERB_RE = /\s+(shall|will|may|agrees?|remains?|designates?|throughout|provided?|issues?|performs?)/i;
+
+export function filterGarbageNerEntities(text: string, entities: DetectedEntity[]): DetectedEntity[] {
+  return entities.filter((e) => {
+    // Drop entities that start mid-word (chunking artifact: "gency s" from "Agency shall")
+    if (e.start > 0 && /\w/.test(text[e.start - 1]) && /\w/.test(text[e.start])) return false;
+    // Drop entities that end mid-word ("cy wil" from "Agency will")
+    if (e.end < text.length && /\w/.test(text[e.end]) && /\w/.test(text[e.end - 1])) return false;
+
+    if (e.type === "ORGANIZATION") {
+      // Drop "Subject + verb" contract boilerplate: "Agency shall", "Client will", etc.
+      if (BOILERPLATE_SUBJECT_RE.test(e.text) && BOILERPLATE_VERB_RE.test(e.text)) return false;
+      // Drop entities starting with punctuation: ". The", ", and"
+      if (/^[.,:;\s]/.test(e.text)) return false;
+      // Drop very short ORGs (≤3 chars) unless they're all-caps acronyms like "IBM"
+      if (e.text.length <= 3 && !/^[A-Z]{2,3}$/.test(e.text)) return false;
+    }
+    return true;
+  });
+}

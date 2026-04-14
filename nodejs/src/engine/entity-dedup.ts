@@ -338,35 +338,70 @@ export function expandLocationBoundaries(text: string, entities: DetectedEntity[
 // PDF/DOCX line wrapping). Only alphabetical words (≥3 chars) in the gap
 // block the merge — digits, punctuation, and short tokens are allowed.
 
+// Types eligible for location merging (US_DRIVER_LICENSE often misclassifies zip codes)
+const LOCATION_MERGE_TYPES = new Set(["LOCATION", "ADDRESS", "US_DRIVER_LICENSE"]);
+const GAP_SHORT_RE = /^[,;\s]+$/;
+const GAP_ADDR_RE = /^[,;\s\w.\-]+$/;
+const GAP_SENTENCE_RE = /[.!?]\s+[A-Z]/;
+const GAP_CONJ_RE = /\b(?:and|or|but|in|at|to|from|near|of|the)\b/i;
+const MAX_GAP_SHORT = 4;
+const MAX_GAP_ADDR = 20;
+
+function flushChain(text: string, chain: DetectedEntity[]): DetectedEntity {
+  if (chain.length === 1) return chain[0];
+  const start = chain[0].start;
+  const end = Math.max(...chain.map((e) => e.end));
+  return {
+    text: text.slice(start, end),
+    type: "LOCATION",
+    start,
+    end,
+    score: Math.max(...chain.map((e) => e.score)),
+    verified: false,
+    reason: "ner:merged",
+  };
+}
+
 export function mergeAdjacentLocations(text: string, entities: DetectedEntity[]): DetectedEntity[] {
   const locs = entities
-    .filter(e => e.type === "LOCATION")
+    .filter((e) => LOCATION_MERGE_TYPES.has(e.type))
     .sort((a, b) => a.start - b.start);
-  const others = entities.filter(e => e.type !== "LOCATION");
+  const others = entities.filter((e) => !LOCATION_MERGE_TYPES.has(e.type));
 
   if (locs.length < 2) return entities;
 
   const merged: DetectedEntity[] = [];
-  let current = { ...locs[0] };
+  let chain = [locs[0]];
 
   for (let i = 1; i < locs.length; i++) {
-    const next = locs[i];
-    const gap = text.slice(current.end, next.start);
-    // Allow: commas, dashes, whitespace, digits (postal codes), periods, newlines
-    // Block: any alphabetical word ≥3 chars (real text between locations)
-    const canMerge =
-      gap.length <= 30 &&
-      /^[,.\s\-\d]*$/.test(gap);
-    if (canMerge) {
-      current.end = next.end;
-      current.text = text.slice(current.start, current.end);
-      current.score = Math.max(current.score, next.score);
+    const curr = locs[i];
+    const chainEnd = Math.max(...chain.map((e) => e.end));
+    const isOverlap = chainEnd >= curr.start;
+    const gap = text.slice(chainEnd, curr.start);
+    const isShortGap = gap.length > 0 && gap.length <= MAX_GAP_SHORT && GAP_SHORT_RE.test(gap);
+    const isAddrGap = gap.length > 0 && gap.length <= MAX_GAP_ADDR && GAP_ADDR_RE.test(gap)
+      && !GAP_SENTENCE_RE.test(gap) && !GAP_CONJ_RE.test(gap)
+      && !gap.includes("\n\n");
+
+    if (isOverlap || isShortGap || isAddrGap) {
+      chain.push(curr);
     } else {
-      merged.push(current);
-      current = { ...next };
+      merged.push(flushChain(text, chain));
+      chain = [curr];
     }
   }
-  merged.push(current);
+  merged.push(flushChain(text, chain));
+
+  // Extend LOCATIONs to absorb trailing country code on same line (e.g. ", USA")
+  for (const e of merged) {
+    const lineEnd = text.indexOf("\n", e.end);
+    const eol = lineEnd === -1 ? text.length : lineEnd;
+    const trailing = text.slice(e.end, eol);
+    if (trailing.length > 0 && trailing.length <= 8 && /^[,;\s]+[A-Za-z]{2,4}$/.test(trailing)) {
+      e.end = eol;
+      e.text = text.slice(e.start, e.end);
+    }
+  }
 
   return [...others, ...merged];
 }

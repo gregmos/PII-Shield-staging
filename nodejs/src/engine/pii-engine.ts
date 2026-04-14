@@ -7,7 +7,7 @@ import { ENV } from "../utils/config.js";
 import { SUPPORTED_ENTITIES } from "./entity-types.js";
 import { runPatternRecognizers, type DetectedEntity } from "./pattern-recognizers.js";
 import { deduplicateOverlaps, expandOrgBoundaries, trimOrgPrefix, expandLocationBoundaries, mergeAdjacentLocations, expandAddressBlocks, cleanBoundaries, assignPlaceholders, type AnonymizeResult } from "./entity-dedup.js";
-import { filterJurisdictionEntities, filterCurrencyEntities } from "./false-positive-filter.js";
+import { filterJurisdictionEntities, filterCurrencyEntities, filterGarbageNerEntities } from "./false-positive-filter.js";
 import { initNer, isNerReady, runNer, nerLog } from "./ner-backend.js";
 import { logServer } from "../audit/audit-logger.js";
 
@@ -299,8 +299,18 @@ export class PIIEngine {
     // 2. NER results from GLiNER ONNX (manual chunking — see runNerChunkedManual)
     logServer(`[Detect] step 2: NER (runNerChunkedManual)...`);
     const nerThreshold = ENV.PII_NER_THRESHOLD;
-    const nerResults = await runNerChunkedManual(text, nerThreshold);
+    let nerResults = await runNerChunkedManual(text, nerThreshold);
     logServer(`[Detect] step 2 done: ${nerResults.length} NER entities`);
+
+    // 2.3. Filter garbage NER entities (chunking artifacts, boilerplate)
+    const beforeGarbage = nerResults.length;
+    nerResults = filterGarbageNerEntities(text, nerResults);
+    if (nerResults.length < beforeGarbage) {
+      logServer(`[Detect] step 2.3: filtered ${beforeGarbage - nerResults.length} garbage entities → ${nerResults.length} remaining`);
+    }
+
+    // 2.5. Merge adjacent LOCATION fragments from NER (before combining with patterns)
+    nerResults = mergeAdjacentLocations(text, nerResults);
 
     // 3. Merge all results
     logServer(`[Detect] step 3: merge + filter (minScore=${minScore})...`);
@@ -334,6 +344,10 @@ export class PIIEngine {
 
     // 5.6. Expand LOCATION entities upward into multi-line address blocks
     allResults = expandAddressBlocks(text, allResults);
+
+    // 5.7. Filter jurisdiction + currency BEFORE propagation (prevent spreading)
+    allResults = filterJurisdictionEntities(allResults, text);
+    allResults = filterCurrencyEntities(allResults, text);
 
     // 6. Verbatim propagation (Phase 5 Fix A)
     logServer(`[Detect] step 6: propagateVerbatimMatches...`);
