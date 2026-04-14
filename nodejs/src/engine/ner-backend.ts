@@ -53,12 +53,26 @@ const LABEL_MAP: Record<string, string> = {
   url: "URL",
   "ip address": "IP_ADDRESS",
   "driver license number": "US_DRIVER_LICENSE",
+  // Extended-set additions (PII_NER_LABEL_SET=extended)
+  "government agency": "ORGANIZATION",
+  "court": "ORGANIZATION",
+  "educational institution": "ORGANIZATION",
+  city: "LOCATION",
+  country: "LOCATION",
+  "state or province": "LOCATION",
+  nationality: "NRP",
+  religion: "NRP",
+  "job title": "PERSON",           // propagation stop — captured as person-context
+  "medical condition": "MEDICAL_LICENSE", // repurpose slot
+  date: "DATE_TIME",
+  product: "ORGANIZATION",          // product names often map to brand/org
+  event: "LOCATION",                // events carry location context
 };
 
 // Entity labels for GLiNER — focused on named entities that regex can't detect.
 // Pattern recognizers handle structured PII (email, phone, SSN, etc.) much better.
 // Fewer labels = higher quality NER results (less attention dilution).
-const NER_LABELS = [
+const NER_LABELS_COMPACT = [
   "person",
   "organization",
   "company",
@@ -69,6 +83,57 @@ const NER_LABELS = [
   "address",
   "date of birth",
 ];
+
+// Extended (enriched) label set — more granular entity types for comparison.
+// Trade-off: higher recall on specific types (city vs. location, court vs. org)
+// but risk of attention dilution + label competition. Enable with
+// `PII_NER_LABEL_SET=extended`.
+const NER_LABELS_EXTENDED = [
+  "person",
+  "organization",
+  "company",
+  "law firm",
+  "bank",
+  "government agency",
+  "court",
+  "educational institution",
+  "location",
+  "address",
+  "city",
+  "country",
+  "state or province",
+  "political group",
+  "nationality",
+  "religion",
+  "job title",
+  "medical condition",
+  "date of birth",
+  "date",
+  "product",
+  "event",
+];
+
+// Tuned (12 labels) — compact + granular ORG sublabels without full extended dilution.
+const NER_LABELS_TUNED = [
+  "person",
+  "organization",
+  "company",
+  "law firm",
+  "bank",
+  "government agency",
+  "court",
+  "educational institution",
+  "location",
+  "address",
+  "political group",
+  "date of birth",
+];
+
+const _labelSet = (process.env.PII_NER_LABEL_SET || "").toLowerCase();
+const NER_LABELS: string[] =
+  _labelSet === "extended" ? NER_LABELS_EXTENDED :
+  _labelSet === "tuned" ? NER_LABELS_TUNED :
+  NER_LABELS_COMPACT;
 
 // Singleton state
 let _gliner: any = null;

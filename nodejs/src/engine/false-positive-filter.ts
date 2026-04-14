@@ -51,6 +51,11 @@ const LEGAL_STOPLIST = new Set([
   "officer", "secretary", "treasurer", "representative",
   "obligor", "obligee", "indemnitor", "indemnitee",
   "party", "parties", "counterparty",
+  // Generic authority/agency phrases (not named bodies)
+  "government agency", "governmental agency", "exchange commission",
+  "regulatory agency", "regulatory authority", "government authority",
+  "government body", "public authority", "administrative agency",
+  "statutory authority", "competent authority",
   // Job titles / corporate roles
   "chairman", "chairwoman", "chairperson", "president",
   "vice president", "manager", "supervisor", "administrator",
@@ -145,6 +150,18 @@ const LEGAL_STOPLIST = new Set([
   "knowledge", "registration", "date", "closing date",
   "immediately", "submit", "effecting", "documents",
   "elected", "changes",
+  // NRP false positives — adjectives/institutions, not personal NRP data
+  "federal", "state", "national", "local", "municipal", "regional", "provincial",
+  "european parliament", "parliament",
+  // Generic geographic terms (used as placeholders/labels, not real locations)
+  "county", "city", "state", "district", "province", "region", "borough",
+  "township", "municipality", "parish",
+  // PERSON FP: role/title phrases
+  "program manager", "program managers", "project manager", "project managers",
+  "printed name",
+  // ORG FP: generic profession phrases + legislation
+  "investment bankers", "investment banker",
+  "davis-bacon act", "davis bacon act",
 ]);
 
 // Function words to ignore when checking if entity is all-stoplist
@@ -264,17 +281,31 @@ const JURISDICTION_AFTER = [
   /^\s*(?:courts?\s+located\s+in)/i,
 ];
 
-const JURISDICTION_WINDOW = 80; // chars to look before/after the entity
+const JURISDICTION_WINDOW = 150; // chars to look before/after the entity
 
 // Entity text that ENDS with a jurisdiction term (e.g. "German courts", "English law")
 // Must END with the term to avoid false positives like "Law Firm of Johnson"
 const JURISDICTION_INLINE = /\b(?:courts?|laws?|legislation|jurisdiction|legal\s+system|tribunal)$/i;
 
+// Common jurisdictions that should be filtered when appearing in governing-law clauses
+const COMMON_JURISDICTIONS = new Set([
+  "california", "texas", "florida", "new york", "delaware", "nevada",
+  "colorado", "washington", "illinois", "massachusetts", "virginia",
+  "oregon", "arizona", "georgia", "pennsylvania", "ohio", "michigan",
+  "australia", "england", "wales", "scotland", "ireland", "india",
+  "germany", "france", "singapore", "hong kong", "canada", "japan",
+  "new south wales", "victoria", "queensland",
+]);
+
+const JURISDICTION_CONTEXT_RE = /\b(?:laws?\s+of|state\s+of|governed\s+by|courts?\s+of|jurisdiction|republic\s+of|commonwealth\s+of|district\s+of)\b/i;
+
 function isJurisdictionContext(entity: DetectedEntity, text: string, allEntities?: DetectedEntity[]): boolean {
   if (!JURISDICTION_TYPES.has(entity.type)) return false;
 
-  const before = text.slice(Math.max(0, entity.start - JURISDICTION_WINDOW), entity.start);
-  const after = text.slice(entity.end, Math.min(text.length, entity.end + JURISDICTION_WINDOW));
+  // Normalize whitespace so \n inside entity text / context doesn't break regex anchors
+  const before = text.slice(Math.max(0, entity.start - JURISDICTION_WINDOW), entity.start).replace(/\s+/g, " ");
+  const after = text.slice(entity.end, Math.min(text.length, entity.end + JURISDICTION_WINDOW)).replace(/\s+/g, " ");
+  const normalizedText = entity.text.replace(/\s+/g, " ").trim();
 
   // Check before-context
   for (const re of JURISDICTION_BEFORE) {
@@ -285,7 +316,13 @@ function isJurisdictionContext(entity: DetectedEntity, text: string, allEntities
     if (re.test(after)) return true;
   }
   // Check if entity text itself contains jurisdiction terms (e.g. "German courts")
-  if (JURISDICTION_INLINE.test(entity.text)) return true;
+  if (JURISDICTION_INLINE.test(normalizedText)) return true;
+
+  // Bare common-jurisdiction name + jurisdiction context in surrounding window
+  const normLower = normalizedText.toLowerCase();
+  if (COMMON_JURISDICTIONS.has(normLower)) {
+    if (JURISDICTION_CONTEXT_RE.test(before) || JURISDICTION_CONTEXT_RE.test(after)) return true;
+  }
 
   return false;
 }
@@ -356,11 +393,35 @@ export function filterFalsePositives(entities: DetectedEntity[], text?: string):
     // Rule C: Currency context — "Indian Rupees", "US Dollars" etc. are NOT PII
     if (text && isCurrencyContext(e, text)) continue;
 
-    // Rule T: Template placeholders — "[insert name of the Successful Bidder]", "[●]", etc.
-    if (/^\[.*\]$/.test(txt.trim())) continue;
+    // Rule T: Template placeholders — "[insert name]", "[●]", "(City/Parish)", etc.
+    const trimmedTxt = txt.trim();
+    if (/^\[.*\]$/.test(trimmedTxt)) continue;
+    // Parenthesized placeholders with slash or generic fill-in words
+    if (/^\([\w\s/]+\)$/.test(trimmedTxt) && /[/]|insert|name|specify|enter|state|city|county/i.test(trimmedTxt)) continue;
+    // Underscores/blanks: "________", "_______ day of _______"
+    if (/^[_\s]{4,}$/.test(trimmedTxt)) continue;
+    // Slash-separated placeholder: "City/Parish", "State/Province" (with or without case)
+    if (/^[A-Za-z]+\/[A-Za-z]+$/.test(trimmedTxt) && trimmedTxt.length <= 30) continue;
+    // Leading © symbol: "©Texas", "© 2012 Party Name"
+    if (/^\s*©/.test(txt)) continue;
 
-    // Rule 0: Stop-list
+    // Rule 0: Stop-list (also strip trailing sentence fragments: "Franchisor. The")
     if (isInStoplist(txt)) continue;
+    if (isInStoplist(txt.replace(/\.\s+(?:the|a|an)\s*$/i, "").trim())) continue;
+    // Tail match: "OSBDC Program Managers" → check if tail "program managers" is in stoplist
+    {
+      const words = txt.trim().split(/\s+/);
+      let tailDrop = false;
+      if (words.length >= 2 && words.length <= 4) {
+        for (let i = 1; i < words.length; i++) {
+          const tail = words.slice(i).join(" ").toLowerCase();
+          if (LEGAL_STOPLIST.has(tail)) { tailDrop = true; break; }
+        }
+      }
+      if (tailDrop) continue;
+    }
+    // ALL-CAPS PERSON with "AND" / "OR" connector → not a person name (e.g. "RESELLER AND OTHERWISE")
+    if (etype === "PERSON" && txt === txt.toUpperCase() && /\b(?:AND|OR|OF|THE)\b/.test(txt)) continue;
 
     // All words are function words → never PII
     const meaningful = normTxt.split(/\s+/).filter((w) => !SKIP_WORDS.has(w));
@@ -368,6 +429,17 @@ export function filterFalsePositives(entities: DetectedEntity[], text?: string):
 
     // All meaningful words in stoplist
     if (meaningful.every((w) => LEGAL_STOPLIST.has(w))) continue;
+
+    // Rule H: Table header patterns — "Key person Number and class of % of shares"
+    if (/\b(?:number\s+and\s+class|%\s+of|column\s+\d|row\s+\d)\b/i.test(txt)) continue;
+
+    // Rule O: ORG false positives
+    if (etype === "ORGANIZATION") {
+      // Clause fragments captured as ORG: "FRANCHISOR'S LIABILITY SHALL BE LIMITED"
+      if (/\b(?:SHALL|WILL|MUST|MAY|LIABILITY|OBLIGATION|PAYMENT|AGREEMENT\s+IS|HAVE\s+EXECUTED|ARE\s+TO)\b/.test(txt)) continue;
+      // Legislation names ending with bare "Act": "Davis-Bacon Act", "Companies Act"
+      if (/\bAct$/.test(txt) && txt.split(/\s+/).length <= 3) continue;
+    }
 
     // Rule 1: Single lowercase word + named entity type
     const words = txt.split(/\s+/);

@@ -403,10 +403,14 @@ function buildRecognizers(): RecognizerDef[] {
       // Negative lookahead excludes common English prepositions/conjunctions at the start
       // so "UNDER TATA TECHNOLOGIES EUROPE LIMITED" → only "TATA TECHNOLOGIES EUROPE LIMITED".
       // AB added for Nordic (Aktiebolaget). AS removed — too common in English ("EXCEPT AS", "SUCH AS").
-      { name: "org_caps_suffix", regex: /\b(?!(?:UNDER|AND|FOR|WITH|FROM|BETWEEN|BY|OR|BUT|AFTER|BEFORE|THROUGH|INTO|UPON|WHEREAS|WHEREBY|BEING|HAVING|ALSO|EACH|EVERY|SUCH|EXCEPT|PURSUANT|SUBJECT|ACCORDING|REGARDING|HEREIN|THEREOF|UNLESS|UNTIL|DURING|WITHIN|WITHOUT|AMONG|AGAINST|OF|TO|IN|ON|AT|NOT|IF|SO|NO|AS|IS|BE|IT|AN|DO|UP|CHANGE|NAME|WHERE|WHEN|WHILE|SINCE|ABOVE|BELOW|ONLY|THAN|THAT|THIS|DOES|SHALL|WILL|MUST|SHOULD|WOULD|COULD|MAY|MIGHT|BEEN|WERE|WAS|ARE|HAS|HAD|DID|ANY|ALL|THE|AGREEMENT|SALE|PURCHASE|SHARE|SHARES|DATED|SCHEDULE|CONTRACT|DEED|RESOLUTION|NOTICE|MEMORANDUM|CERTIFICATE|POWER|ARTICLES)\s)(?:(?:[A-Z][A-Z&.-]*|&)\s+){1,6}(?:LIMITED|PRIVATE\s+LIMITED|PVT\.?\s*LTD\.?|LTD\.?|LLP|INC\.?|CORP\.?|CORPORATION|GMBH|AG|AB|SA|NV|BV|PLC|LLC|CO\.)\b/g, score: 0.4 },
-      // Mixed-case with corporate suffix: "Escenda Engineering AB", "NextEra Solutions Ltd."
+      { name: "org_caps_suffix", regex: /\b(?!(?:UNDER|AND|FOR|WITH|FROM|BETWEEN|BY|OR|BUT|AFTER|BEFORE|THROUGH|INTO|UPON|WHEREAS|WHEREBY|BEING|HAVING|ALSO|EACH|EVERY|SUCH|EXCEPT|PURSUANT|SUBJECT|ACCORDING|REGARDING|HEREIN|THEREOF|UNLESS|UNTIL|DURING|WITHIN|WITHOUT|AMONG|AGAINST|OF|TO|IN|ON|AT|NOT|IF|SO|NO|AS|IS|BE|IT|AN|DO|UP|CHANGE|NAME|WHERE|WHEN|WHILE|SINCE|ABOVE|BELOW|ONLY|THAN|THAT|THIS|DOES|SHALL|WILL|MUST|SHOULD|WOULD|COULD|MAY|MIGHT|BEEN|WERE|WAS|ARE|HAS|HAD|DID|ANY|ALL|THE|AGREEMENT|SALE|PURCHASE|SHARE|SHARES|DATED|SCHEDULE|CONTRACT|DEED|RESOLUTION|NOTICE|MEMORANDUM|CERTIFICATE|POWER|ARTICLES)\s)(?:(?:[A-Z][A-Z&.-]*|&)[\s,]+){1,8}(?:LIMITED|PRIVATE\s+LIMITED|PVT\.?\s*LTD\.?|LTD\.?|LLP|INC\.?|CORP\.?|CORPORATION|GMBH|AG|AB|SA|NV|BV|PLC|LLC|CO\.)\b/g, score: 0.4 },
+      // Mixed-case with corporate suffix: "Escenda Engineering AB", "NextEra Solutions Ltd.", "Anchore, Inc."
       // The (?:...|&) group allows "&" as standalone connector: "Hartwick & Pemberton LLP"
-      { name: "org_mixed_suffix", regex: /\b(?:(?:[A-Z][\w&.-]*|&)\s+){1,5}(?:Limited|Ltd\.?|LLP|Inc\.?|Corp\.?|Corporation|GmbH|AG|AB|SA|NV|BV|PLC|LLC|Co\.)\b/g, score: 0.35 },
+      // [\s,]+ allows comma-separated suffixes: "Anchore, Inc."
+      { name: "org_mixed_suffix", regex: /\b(?:(?:[A-Z][\w&.-]*|&)[\s,]+){1,8}(?:Limited|Ltd\.?|LLP|Inc\.?|Corp\.?|Corporation|GmbH|AG|AB|SA|NV|BV|PLC|LLC|Co\.)\b/g, score: 0.35 },
+      // Authority / Agency / Commission / etc. — governmental and institutional bodies without a corporate suffix.
+      // e.g. "Orange County Housing Authority", "Small Business Administration", "Environmental Protection Agency"
+      { name: "org_authority", regex: /\b[A-Z][a-zA-Z]+(?:\s+(?:of|the|and|for)\s+)?(?:\s+[A-Z][a-zA-Z]+){0,5}\s+(?:Authority|Agency|Commission|Administration|Council|Bureau|Tribunal|Ministry|Directorate)\b/g, score: 0.4 },
     ],
     context: ["company", "corporation", "entity", "incorporated", "registered", "firm"],
   });
@@ -466,13 +470,14 @@ const ADDRESS_OF_RE = /,\s*of\s+(?=\d)/gi;
  * Supports UK (E14 5AB), US (10118), EU (SE-431 36, D-10719), NL (1017 AB), etc.
  */
 const POSTCODE_ADDRESS_RE = new RegExp(
-  '\\b\\d{1,5}(?!\\d)[A-Za-z]?' +                     // street number (1-5 digits, NOT part of longer number)
-  '[\\w\\s\u2019\u2018\'.,\\-]{5,80}' +                // street name + comma-separated parts
+  '\\b\\d{1,5}(?:/\\d{1,5})?(?!\\d)[A-Za-z]?' +        // street number (1-5 digits, optional /N for AU unit), NOT part of longer number
+  '[\\w\\s\u2019\u2018\'.,\\-]{5,120}' +               // street name + comma-separated parts (up to ~120 chars to cover "S. Shawnee St., Aurora, CO,")
   '(?:' +
     '[A-Z]{1,2}\\d{1,2}[A-Z]?\\s+\\d[A-Z]{2}' +       // UK: E14 5AB, M3 2BA
     '|\\d{5}(?:-\\d{4})?' +                              // US: 10118, 10118-1234
     '|[A-Z]{1,2}-\\d{3,5}(?:\\s\\d{2})?' +               // EU: SE-431 36, D-10719 (dash required)
     '|\\d{4,5}\\s+[A-Z]{2}' +                            // NL: 1017 AB
+    '|(?:NSW|VIC|QLD|WA|SA|TAS|ACT|NT)\\s+\\d{4}' +     // AU: VIC 3000, NSW 2150
   ')' +
   '(?:,\\s*(?:[A-Z][a-z]+(?:\\s+[A-Z][a-z]+){0,2}))?' , // optional: ", United Kingdom" (title-case words only)
   'g'
@@ -623,9 +628,23 @@ function extractLabeledAddresses(text: string): DetectedEntity[] {
     // Validate: must contain a comma (city separator) — reduces noise
     if (!matchText.includes(",")) continue;
 
-    // Reject false positives: currency amounts, bank details, dates
+    // Reject false positives: currency amounts, bank details
     if (POSTCODE_FP_RE.test(matchText)) continue;
     if (POSTCODE_BANK_RE.test(matchText)) continue;
+    // Fix 9: Date ranges — "01, 2015 through September 30, 2016"
+    if (/\b(?:january|february|march|april|may|june|july|august|september|october|november|december|through|fiscal\s+year)\b/i.test(matchText)) continue;
+    // Fix 10: Executive orders / legal references
+    if (/\b(?:executive\s+order|order\s+no|act\s+no|law\s+no|regulation|amended)\b/i.test(matchText)) continue;
+    // Fix 11: Footer/header text
+    if (/\b(?:CONFIDENTIAL|FORM|DRAFT|TEMPLATE|AMENDMENT|REVISION)\b/.test(matchText)) continue;
+    // AIA/standards document codes: "A201®–2017", "A101-2017"
+    if (/\b[A-Z]\d{3}[®\-\u2013]{1,2}\d{4}/.test(matchText)) continue;
+    // Texas real-estate form codes: "TXR-2101)", "TREC 20-14", "TAR 1410"
+    if (/\b(?:TXR|TREC|TAR)[\s\-]?\d+/i.test(matchText)) continue;
+    // Multi-line blocks with > 3 newlines = not a single address
+    if ((matchText.match(/\n/g) || []).length > 3) continue;
+    // Form boilerplate
+    if (/\b(?:Initialed\s+for\s+Identification|Signature\s+Page|SIGNATURE\s+BLOCK)\b/i.test(matchText)) continue;
 
     results.push({
       text: matchText,
@@ -649,7 +668,7 @@ function extractLabeledAddresses(text: string): DetectedEntity[] {
 // These labels appear in structured tables/forms — NER often misses
 // names in tabular format because context is split across cells.
 
-const PERSON_LABEL_RE = /(?:full\s+legal\s+name|(?:ceo|cto|cfo|coo|cio)\s*(?:\/\s*)?(?:authorized\s+)?signatory|authorized\s+(?:signatory|representative|officer)|emergency\s+contact|contact\s+(?:person|name)|(?:directors?|officers?|managers?|partners?|trustees?|nominees?|shareholders?|beneficiaries?)(?:\s+name)?|signatory|witness|name|fao|for\s+the\s+attention\s+of|contact|company\s+secretary)\s*:/gi;
+const PERSON_LABEL_RE = /(?:full\s+legal\s+name|(?:ceo|cto|cfo|coo|cio)\s*(?:\/\s*)?(?:authorized\s+)?signatory|authorized\s+(?:signatory|representative|officer)|emergency\s+contact|contact\s+(?:person|name)|(?:directors?|officers?|managers?|partners?|trustees?|nominees?|shareholders?|beneficiaries?)(?:\s+name)?|signatory|witness|name|fao|for\s+the\s+attention\s+of|contact|company\s+secretary|printed\s+name|(?:^|[\n\r])\s*by)\s*:/gim;
 
 /** Matches "[action] by [Name]" — signed by, prepared by, etc. (no colon) */
 const PERSON_BY_RE = /(?:signed|prepared|coordinated|drafted|witnessed|authorised|authorized|executed|approved|confirmed|certified|attested)\s+by\b/gi;
@@ -668,7 +687,26 @@ function extractLabeledPersons(text: string): DetectedEntity[] {
     // Skip whitespace after colon
     let start = afterColon;
     while (start < text.length && /[ \t]/.test(text[start])) start++;
-    if (start >= text.length || text[start] === "\n") continue;
+
+    // Signature-block support: if the current line is empty or underscores,
+    // skip up to 2 blank/underscore lines and extract from next non-empty line.
+    if (start < text.length && (text[start] === "\n" || text[start] === "\r" || text[start] === "_")) {
+      let newlineCount = 0;
+      let probe = start;
+      while (probe < text.length && newlineCount < 3) {
+        const c = text[probe];
+        if (c === "\n") { newlineCount++; probe++; continue; }
+        if (/[\s_]/.test(c)) { probe++; continue; }
+        break;
+      }
+      // Only accept the skip if next line starts with an uppercase letter (name-like)
+      if (probe < text.length && /[A-Z\u00C0-\u024F]/.test(text[probe])) {
+        start = probe;
+      } else {
+        continue;
+      }
+    }
+    if (start >= text.length) continue;
 
     // Read until end of line or next label
     let end = start;
@@ -764,17 +802,93 @@ function extractLabeledPersons(text: string): DetectedEntity[] {
     if (!/\s/.test(personText)) continue;
     if (!/^[A-Z\u00C0-\u024F]/.test(personText)) continue;
     if (/^\d|@|\.com|\.org/.test(personText)) continue;
-    if (CORPORATE_SUFFIX_RE.test(personText)) continue;
     if (/\d/.test(personText)) continue;
+
+    // Fix 8: Reclassify as ORG if text contains corporate suffix or "Association"
+    const isCorporate = CORPORATE_SUFFIX_RE.test(personText) ||
+      /\b(?:Association|Foundation|Institute|Commission|Committee|Authority|Department|Bureau|Agency)\b/i.test(personText);
 
     results.push({
       text: personText,
-      type: "PERSON",
+      type: isCorporate ? "ORGANIZATION" : "PERSON",
       start,
       end: start + personText.length,
       score: 0.75,
       verified: true,
-      reason: "pattern:labeled_person_by",
+      reason: isCorporate ? "pattern:labeled_org_by" : "pattern:labeled_person_by",
+    });
+  }
+
+  return results;
+}
+
+// ════════════════════════════════════════════════════════════
+// Defined party extractor — "between X and Y", "X (the 'Company')"
+// ════════════════════════════════════════════════════════════
+
+/** Corporate suffix regex for party validation */
+const PARTY_CORP_RE = /\b(?:Ltd\.?|Limited|LLP|Inc\.?|Corp\.?|Corporation|GmbH|AG|AB|SA|NV|BV|PLC|LLC|Co\.|Pty\.?\s*Ltd\.?|Private\s+Limited|PVT\.?\s*LTD\.?)\b/i;
+
+/** Defined term pattern: "Anchore, Inc. (the 'Company')", "John Doe (the "Buyer")" */
+const DEFINED_TERM_RE = /\b([A-Z][\w\s&.,'\u2019-]{2,60}?)\s*\(\s*(?:the\s+)?["\u201c\u2018']([\w\s]+)["\u201d\u2019']\s*\)/g;
+
+/** ORG-indicating defined terms */
+const ORG_DEFINED_TERMS = /\b(?:company|corporation|employer|franchisor|franchisee|licensor|licensee|vendor|supplier|distributor|contractor|lender|borrower|landlord|tenant|lessor|lessee|developer|provider|operator|publisher|seller|buyer|party|principal|agent|grantor|grantee|client)\b/i;
+
+/** PERSON-indicating defined terms */
+const PERSON_DEFINED_TERMS = /\b(?:individual|employee|consultant|executive|director|officer|guarantor|witness|signatory)\b/i;
+
+function extractDefinedParties(text: string): DetectedEntity[] {
+  const results: DetectedEntity[] = [];
+  // Only scan first 3000 chars (recitals/definitions section)
+  const scanText = text.slice(0, 3000);
+
+  DEFINED_TERM_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = DEFINED_TERM_RE.exec(scanText)) !== null) {
+    let partyName = m[1].trim().replace(/[\s,;.]+$/, "");
+    const definedTerm = m[2].trim().toLowerCase();
+
+    // Validate: at least 2 chars, starts with uppercase
+    if (partyName.length < 2) continue;
+    if (!/^[A-Z]/.test(partyName)) continue;
+    // Skip generic text like "This Agreement"
+    if (/^(?:this|that|the|each|any|such|said|all)\s/i.test(partyName)) continue;
+
+    // Reject document titles: "FRANCHISE AGREEMENT THIS FRANCHISE AGREEMENT"
+    if (/\b(?:agreement|contract|deed|amendment|addendum|memorandum|certificate|notice)\b/i.test(partyName)) continue;
+    // Reject sentence fragments with verbs
+    if (/\b(?:are|shall|is|was|will|may|have|has|had|been|being|does|did)\b/i.test(partyName)) continue;
+    // Reject titles/roles without corporate suffix
+    if (/\b(?:officer|president|director|manager|secretary|treasurer|chairman|executive)\b/i.test(partyName) && !PARTY_CORP_RE.test(partyName)) continue;
+    // Reject form fields with underscores or "No."
+    if (/_/.test(partyName) || /\bNo\.\s*$/i.test(partyName)) continue;
+    // Reject if contains digits (addresses, reference numbers)
+    if (/\d/.test(partyName)) continue;
+
+    // Determine type from defined term or corporate suffix
+    let entityType: string;
+    if (PARTY_CORP_RE.test(partyName) || ORG_DEFINED_TERMS.test(definedTerm)) {
+      entityType = "ORGANIZATION";
+    } else if (PERSON_DEFINED_TERMS.test(definedTerm)) {
+      entityType = "PERSON";
+    } else if (partyName === partyName.toUpperCase() && partyName.split(/\s+/).length >= 2) {
+      entityType = "ORGANIZATION"; // ALL-CAPS multi-word → likely ORG
+    } else {
+      entityType = "ORGANIZATION"; // default for contract parties
+    }
+
+    const start = m.index;
+    const end = start + partyName.length;
+
+    results.push({
+      text: partyName,
+      type: entityType,
+      start,
+      end,
+      score: 0.7,
+      verified: true,
+      reason: "pattern:defined_party",
     });
   }
 
@@ -806,6 +920,55 @@ export function runPatternRecognizers(text: string): DetectedEntity[] {
           if (/trade\s*mark|registration\s+(?:number|no\.?)|(?:classes?\s+\d)/i.test(before)) continue;
         }
 
+        // Fix 1: IP_ADDRESS — filter legal section numbering (2.32.1.1, 5.1.6.1)
+        if (rec.entityType === "IP_ADDRESS") {
+          const matchText = match[0];
+          const before = text.slice(Math.max(0, start - 30), start);
+          // Skip if preceded by section/clause indicator or § symbol
+          if (/(?:§|section|clause|article|item|paragraph|part|sub[-\s]?(?:section|clause))\s*$/i.test(before)) continue;
+          // Skip if preceded by dotted-number pattern (legal numbering continuation)
+          if (/\d+\.\s*$/.test(before)) continue;
+          // Skip if all octets are small — real IPs almost never have first≤9 + all≤50
+          const octets = matchText.split(".").map(Number);
+          if (octets.length === 4 && octets[0] <= 9 && octets.every(o => o <= 50)) continue;
+        }
+
+        // Fix 3: UK_NHS — filter footer/order/reference numbers, phone context
+        if (rec.entityType === "UK_NHS") {
+          const before = text.slice(Math.max(0, start - 60), start);
+          const after = text.slice(end, Math.min(text.length, end + 60));
+          const ctx = before + after;
+          // Order/document/reference numbers (handles "Order / No.", "Order No.", etc.)
+          if (/\b(?:order[\s/]*no|document[\s/]*no|ref(?:erence)?[\s./]*no|license[\s/]*no|contract[\s/]*no|form[\s/]*no|page\s+\d)/i.test(ctx)) continue;
+          // Footer/copyright context
+          if (/(?:©|copyright|\bpage\b|\binitial)/i.test(ctx)) continue;
+          // Phone/fax context — reclassify as PHONE_NUMBER rather than dropping.
+          // Australian / international phone numbers often match the 10-digit NHS shape.
+          if (/\b(?:tel|fax|phone|mobile|telephone)\s*:?\s*$/i.test(before)) {
+            results.push({
+              text: match[0],
+              type: "PHONE_NUMBER",
+              start,
+              end,
+              score: 0.75,
+              verified: true,
+              reason: "pattern:labeled_phone",
+            });
+            continue;
+          }
+        }
+
+        // ORG false-positive: reject clause verbs / disclaimer fragments
+        if (rec.entityType === "ORGANIZATION") {
+          const matchText = match[0];
+          // "BUT NOT LIMITED", "OR IMPLIED, INCLUDING, BUT NOT LIMITED" — disclaimer boilerplate
+          if (/\b(?:NOT|BUT|OR|AND)\s+LIMITED\b/i.test(matchText)) continue;
+          // All-caps clause fragments with disclaimer verbs
+          if (/\b(?:EXPRESS|IMPLIED|INCLUDING|WARRANTIES|MERCHANTABILITY|FITNESS)\b/.test(matchText)) continue;
+          // Pure list enumeration: "A Partnership, An LLC, An LLP"
+          if (/\b(?:A|An|The)\s+(?:Partnership|LLC|LLP|Corporation|Limited)\b/i.test(matchText) && /,/.test(matchText)) continue;
+        }
+
         results.push({
           text: match[0],
           type: rec.entityType,
@@ -823,5 +986,50 @@ export function runPatternRecognizers(text: string): DetectedEntity[] {
   results.push(...extractLabeledAddresses(text));
   results.push(...extractLabeledPersons(text));
 
-  return results;
+  // Defined party extraction — recitals/definitions in contracts
+  results.push(...extractDefinedParties(text));
+
+  // Final cleanup: trim trailing artifacts on ORG captures
+  for (const e of results) {
+    if (e.type !== "ORGANIZATION") continue;
+    let cleaned = e.text;
+    // Strip trailing "( ACRONYM" or bare "("
+    cleaned = cleaned.replace(/\s*\(\s*[A-Z]{2,6}\s*$/, "").replace(/\s*\(\s*$/, "");
+    // Strip trailing stopwords: "Restaurants as", "Smith Group and"
+    cleaned = cleaned.replace(/\s+(?:as|of|the|and|to|in|or|but|for|with|by)\s*$/i, "");
+    // Strip leading "See " / "See also " (citation artifact)
+    cleaned = cleaned.replace(/^(?:See(?:\s+also)?)\s+/, "");
+    // Strip leading quote/dash artifacts
+    cleaned = cleaned.replace(/^["\u201c\u201d\u2013\u2014-]+\s*/, "");
+    cleaned = cleaned.replace(/[\s,;.]+$/, "");
+    if (cleaned !== e.text && cleaned.length >= 2) {
+      e.text = cleaned;
+      e.end = e.start + cleaned.length;
+    }
+  }
+
+  // Final cleanup: strip label prefixes from PERSON captures & reject fragments
+  const cleanedResults: DetectedEntity[] = [];
+  for (const e of results) {
+    if (e.type !== "PERSON") {
+      cleanedResults.push(e);
+      continue;
+    }
+    let cleaned = e.text;
+    // Strip leading "Name:", "Signature of", "Signed", "Witness:", etc.
+    cleaned = cleaned.replace(/^(?:Name|Signatory|Witness|Signature(?:\s+of)?|Signed(?:\s+sealed(?:\s+and)?)?|Printed\s+Name)\s*:?\s*/i, "");
+    cleaned = cleaned.replace(/^["\u201c\u201d]+\s*/, "");
+    cleaned = cleaned.replace(/[\s,;.]+$/, "");
+    // Reject if now too short, missing space (single word), or contains no alphabetic
+    if (cleaned.length < 3 || !/\s/.test(cleaned) || !/[A-Za-z]{2}/.test(cleaned)) continue;
+    // Reject trailing-conjunction fragments: "Signed sealed and", "Signature of"
+    if (/\b(?:of|and|by|the|for|to|in|or|with)$/i.test(cleaned.trim())) continue;
+    if (cleaned !== e.text) {
+      e.text = cleaned;
+      e.end = e.start + cleaned.length;
+    }
+    cleanedResults.push(e);
+  }
+
+  return cleanedResults;
 }
