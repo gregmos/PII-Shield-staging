@@ -6,8 +6,8 @@
 import { ENV } from "../utils/config.js";
 import { SUPPORTED_ENTITIES } from "./entity-types.js";
 import { runPatternRecognizers, type DetectedEntity } from "./pattern-recognizers.js";
-import { deduplicateOverlaps, expandOrgBoundaries, cleanBoundaries, assignPlaceholders, type AnonymizeResult } from "./entity-dedup.js";
-import { filterJurisdictionEntities } from "./false-positive-filter.js";
+import { deduplicateOverlaps, expandOrgBoundaries, trimOrgPrefix, expandLocationBoundaries, mergeAdjacentLocations, expandAddressBlocks, cleanBoundaries, assignPlaceholders, type AnonymizeResult } from "./entity-dedup.js";
+import { filterJurisdictionEntities, filterCurrencyEntities } from "./false-positive-filter.js";
 import { initNer, isNerReady, runNer, nerLog } from "./ner-backend.js";
 import { logServer } from "../audit/audit-logger.js";
 
@@ -308,9 +308,11 @@ export class PIIEngine {
     allResults = allResults.filter((e) => e.score >= minScore);
     logServer(`[Detect] step 3 done: ${allResults.length} after filter`);
 
-    // 3.5. Expand ORG boundaries to include trailing suffixes (Ltd, Inc, GmbH...)
-    logServer(`[Detect] step 3.5: expandOrgBoundaries...`);
+    // 3.5. Expand boundaries: ORG suffixes + truncated multi-word locations
+    logServer(`[Detect] step 3.5: expandOrgBoundaries + trimOrgPrefix + expandLocationBoundaries...`);
     allResults = expandOrgBoundaries(text, allResults);
+    allResults = trimOrgPrefix(text, allResults);
+    allResults = expandLocationBoundaries(text, allResults);
 
     // 4. Deduplicate overlapping spans
     logServer(`[Detect] step 4: dedup...`);
@@ -322,14 +324,26 @@ export class PIIEngine {
     allResults = cleanBoundaries(text, allResults);
     logServer(`[Detect] step 5 done: ${allResults.length} after clean`);
 
+    // 5.5. Merge adjacent LOCATION entities (address fragments)
+    const locsBefore = allResults.filter(e => e.type === "LOCATION").length;
+    allResults = mergeAdjacentLocations(text, allResults);
+    const locsAfter = allResults.filter(e => e.type === "LOCATION").length;
+    if (locsBefore !== locsAfter) {
+      logServer(`[Detect] step 5.5: merged ${locsBefore} LOCATION fragments → ${locsAfter} entities`);
+    }
+
+    // 5.6. Expand LOCATION entities upward into multi-line address blocks
+    allResults = expandAddressBlocks(text, allResults);
+
     // 6. Verbatim propagation (Phase 5 Fix A)
     logServer(`[Detect] step 6: propagateVerbatimMatches...`);
     allResults = propagateVerbatimMatches(text, allResults);
     logServer(`[Detect] step 6a: final dedup...`);
     allResults = deduplicateOverlaps(allResults);
 
-    // 7. Re-filter jurisdiction entities (propagation may re-add them)
+    // 7. Re-filter jurisdiction + currency entities (propagation may re-add them)
     allResults = filterJurisdictionEntities(allResults, text);
+    allResults = filterCurrencyEntities(allResults, text);
 
     logServer(`[Detect] DONE: ${allResults.length} entities`);
     return allResults;

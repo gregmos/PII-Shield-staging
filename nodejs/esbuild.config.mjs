@@ -27,6 +27,7 @@ await build({
     "onnxruntime-node",
     "onnxruntime-common",
     "sharp",
+    "canvas",  // optional pdf.js dependency for rendering (not needed for text extraction)
   ],
   loader: { ".html": "text" },
   banner: {

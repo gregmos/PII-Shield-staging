@@ -199,15 +199,18 @@ export async function anonymizeDocxWithMapping(
 }
 
 /**
- * Main DOCX anonymization: detect PII per paragraph, assign placeholders globally,
- * replace in-place per paragraph. Mirrors Python v1.1.0 anonymize_docx
- * (server/pii_shield_server.py:1240-1283) which iterates paragraphs, runs detect()
- * on each, then applies placeholders surgically into the run-level XML.
+ * Main DOCX anonymization: detect PII on full extracted text, assign
+ * placeholders globally, replace in-place per paragraph.
  *
- * Per-paragraph detection (vs. flat full-document) gives the model focused
- * inputs (~100-500 chars each), avoids cross-paragraph confusion, and matches
- * the Python recall numbers. The XML surgery itself was already correct —
- * see replaceAcrossRuns above for the prefix/match/suffix splitting.
+ * Full-text detection (vs. per-paragraph) gives labeled extractors
+ * (addresses, persons) the "Label: Value" context from table rows,
+ * and enables context-boost for patterns like reg_number. The engine
+ * handles chunking internally (NER_CHUNK_SIZE=800). This matches the
+ * approach used for PDF and plain-text files.
+ *
+ * Replacement uses text search (not offsets) — entity text is found
+ * verbatim in individual paragraph elements even though detection
+ * used the merged extractText() format.
  */
 export async function anonymizeDocx(
   docxPath: string, language = "en", prefix = "",
@@ -226,44 +229,15 @@ export async function anonymizeDocx(
   const fullText = extractText(model);
   const html = docxToHtml(model);
 
-  // Per-paragraph detection. We collect all (paragraph index, paragraph-relative
-  // entity, absolute offset in fullText) so the review UI can still show absolute
-  // positions while the XML edits use paragraph-relative offsets.
+  // Full-text detection: run PII engine once on the extractText() output.
+  // This gives labeled extractors (addresses, persons) the "Label: Value"
+  // context from table rows, and gives context-boosted patterns (reg_number)
+  // access to nearby label text. The engine handles chunking internally
+  // (NER_CHUNK_SIZE=800). Same approach as PDF and plain-text files.
   const allPElems = iterAllWpElements(model.mainDoc);
-  type ParaEntry = { paraIdx: number; pElem: Element; paraText: string; entities: DetectedEntity[]; absOffset: number };
-  const paraEntries: ParaEntry[] = [];
-
-  let runningOffset = 0;
-  for (let i = 0; i < allPElems.length; i++) {
-    const pElem = allPElems[i];
-    const paraText = getParagraphText(pElem);
-    const absOffset = runningOffset;
-    runningOffset += paraText.length + 1; // +1 for the '\n' join in extractText
-
-    if (!paraText.trim()) continue;
-
-    const detected = await engine.detect(paraText, language);
-    if (detected.length > 0) {
-      nerLog(`[DOCX] para ${i + 1}/${allPElems.length} (${paraText.length} chars) → ${detected.length} entities`);
-    }
-    paraEntries.push({ paraIdx: i, pElem, paraText, entities: detected, absOffset });
-  }
-
-  // Flatten to a single list and assign placeholders globally so the same
-  // entity text gets the same placeholder across paragraphs (shared mapping,
-  // shared family counters). assignPlaceholders sorts internally by .start,
-  // so we pass absolute offsets to keep numbering deterministic.
-  const flatEntities: DetectedEntity[] = [];
-  for (const pe of paraEntries) {
-    for (const e of pe.entities) {
-      flatEntities.push({
-        ...e,
-        start: e.start + pe.absOffset,
-        end: e.end + pe.absOffset,
-      });
-    }
-  }
-  const { entities: placedEntities, mapping } = assignPlaceholders(flatEntities, prefix);
+  const detected = await engine.detect(fullText, language);
+  nerLog(`[DOCX] full-text detection (${fullText.length} chars) → ${detected.length} entities`);
+  const { entities: placedEntities, mapping } = assignPlaceholders(detected, prefix);
 
   // Map placeholder by exact text so we can apply per-paragraph replacements
   // (the placeholder for "Acme Corp" is the same regardless of where it appeared).
@@ -307,24 +281,16 @@ export async function anonymizeDocx(
   }
 
   if (!usedSidecar) {
-    // Apply per paragraph using paragraph-relative replacement. Sort target
-    // texts longest-first so "Acme Corp Ltd" replaces before "Acme Corp" within
-    // the same paragraph.
+    // Apply replacements by searching each paragraph for entity text.
+    // Sort longest-first so "Acme Corp Ltd" replaces before "Acme Corp".
     const sortedTexts = Object.keys(reverseMap).sort((a, b) => b.length - a.length);
 
-    for (const pe of paraEntries) {
-      const preLen = pe.paraText.length;
-      let replacedCount = 0;
+    for (const pElem of allPElems) {
+      if (!getParagraphText(pElem).trim()) continue;
       for (const realText of sortedTexts) {
-        // Cheap check: only attempt replacement if the paragraph still contains the text
-        if (getParagraphText(pe.pElem).includes(realText)) {
-          replaceAcrossRuns(pe.pElem, realText, reverseMap[realText]);
-          replacedCount++;
+        if (getParagraphText(pElem).includes(realText)) {
+          replaceAcrossRuns(pElem, realText, reverseMap[realText]);
         }
-      }
-      if (replacedCount > 0) {
-        const postLen = getParagraphText(pe.pElem).length;
-        nerLog(`[DOCX] para ${pe.paraIdx + 1}: pre-len=${preLen} post-len=${postLen} replaced=${replacedCount}`);
       }
     }
     await saveDocx(model, outPath);

@@ -152,36 +152,113 @@ export function getParagraphText(pElem: Element): string {
 }
 
 /**
+ * Check if an element is inside a table cell (w:tc).
+ */
+function isInsideTableCell(elem: Node): boolean {
+  let parent = elem.parentNode;
+  while (parent) {
+    const ln = (parent as Element).localName || (parent.nodeName || "").replace(/^w:/, "");
+    if (ln === "tc") return true;
+    if (ln === "body" || ln === "hdr" || ln === "ftr") return false;
+    parent = parent.parentNode;
+  }
+  return false;
+}
+
+/**
+ * Extract text from a table element. For 2-column rows, formats as "Label: Value"
+ * so downstream pattern recognizers can detect labeled fields (addresses, names, IDs).
+ */
+function extractTableText(tblElem: Element, parts: string[]): void {
+  for (let i = 0; i < tblElem.childNodes.length; i++) {
+    const child = tblElem.childNodes[i];
+    if (child.nodeType !== 1) continue;
+    const el = child as Element;
+    const localName = el.localName || el.nodeName.replace(/^w:/, "");
+    if (localName !== "tr") continue;
+
+    const cellTexts: string[] = [];
+    for (let j = 0; j < el.childNodes.length; j++) {
+      const tcNode = el.childNodes[j];
+      if (tcNode.nodeType !== 1) continue;
+      const tcEl = tcNode as Element;
+      const tcLn = tcEl.localName || tcEl.nodeName.replace(/^w:/, "");
+      if (tcLn !== "tc") continue;
+
+      const cellParts: string[] = [];
+      for (let k = 0; k < tcEl.childNodes.length; k++) {
+        const cellChild = tcEl.childNodes[k];
+        if (cellChild.nodeType !== 1) continue;
+        const cellEl = cellChild as Element;
+        const cellLn = cellEl.localName || cellEl.nodeName.replace(/^w:/, "");
+        if (cellLn === "p" && !isInsideTrackedDelete(cellEl)) {
+          cellParts.push(getParagraphText(cellEl));
+        } else if (cellLn === "tbl") {
+          extractTableText(cellEl, cellParts); // nested table
+        }
+      }
+      cellTexts.push(cellParts.join(" ").trim());
+    }
+
+    // 2-column row with both cells non-empty → "Label: Value"
+    if (cellTexts.length === 2 && cellTexts[0] && cellTexts[1]) {
+      const label = cellTexts[0].replace(/:\s*$/, ""); // strip trailing colon if present
+      parts.push(`${label}: ${cellTexts[1]}`);
+    } else {
+      // Other layouts: join non-empty cells with " | "
+      const nonEmpty = cellTexts.filter(t => t);
+      if (nonEmpty.length > 0) parts.push(nonEmpty.join(" | "));
+    }
+  }
+}
+
+/**
+ * Recursively extract text from document body/header/footer nodes.
+ * Table-aware: 2-column table rows become "Label: Value".
+ */
+function extractFromNode(node: Node, parts: string[]): void {
+  for (let i = 0; i < node.childNodes.length; i++) {
+    const child = node.childNodes[i];
+    if (child.nodeType !== 1) continue;
+    const el = child as Element;
+    const localName = el.localName || el.nodeName.replace(/^w:/, "");
+
+    if (localName === "tbl") {
+      extractTableText(el, parts);
+    } else if (localName === "p" && !isInsideTableCell(el) && !isInsideTrackedDelete(el)) {
+      parts.push(getParagraphText(el));
+    } else if (localName !== "p") {
+      // Recurse into sectPr, body, hdr, ftr, etc. — but NOT into w:p (handled above)
+      extractFromNode(child, parts);
+    }
+  }
+}
+
+/**
  * Extract all text from a DOCX model.
  * Returns text with paragraphs separated by newlines.
+ * Table-aware: 2-column table rows are formatted as "Label: Value"
+ * so pattern recognizers can detect labeled fields.
  */
 export function extractText(model: DocxModel): string {
   const parts: string[] = [];
 
-  // Body paragraphs
-  const bodyPs = iterAllWpElements(model.mainDoc);
-  for (const p of bodyPs) {
-    parts.push(getParagraphText(p));
+  // Body — walks paragraphs and tables
+  const body = model.mainDoc.getElementsByTagNameNS(WNS, "body")[0];
+  if (body) {
+    extractFromNode(body, parts);
   }
-
-  // Tables are already included in body since w:p inside w:tc is caught by iterAllWpElements.
 
   // Headers and footers
   for (const [, xml] of model.headerXmls) {
     if (!xml) continue;
     const doc = new DOMParser().parseFromString(xml, "text/xml");
-    const ps = iterAllWpElements(doc);
-    for (const p of ps) {
-      parts.push(getParagraphText(p));
-    }
+    extractFromNode(doc.documentElement, parts);
   }
   for (const [, xml] of model.footerXmls) {
     if (!xml) continue;
     const doc = new DOMParser().parseFromString(xml, "text/xml");
-    const ps = iterAllWpElements(doc);
-    for (const p of ps) {
-      parts.push(getParagraphText(p));
-    }
+    extractFromNode(doc.documentElement, parts);
   }
 
   return parts.join("\n");

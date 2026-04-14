@@ -119,6 +119,32 @@ const LEGAL_STOPLIST = new Set([
   "microsoft", "google", "apple", "amazon", "meta",
   // Cyrillic homoglyphs
   "\u0441lient", "сlient",
+  // Plurals of existing terms (LLM discovers these)
+  "firms", "companies", "corporations", "entities", "ventures",
+  "subsidiaries", "affiliates", "divisions", "branches",
+  "shareholders", "directors", "officers",
+  // Additional contract / transaction terms
+  "project", "projects", "nominee", "nominees", "nominee shareholders",
+  "trust", "trusts", "ppa",
+  "substation", "substations",
+  "joint venture", "joint ventures",
+  "government entity", "government entities", "other bodies",
+  // Common words that ALL-CAPS ORG regex captures across newlines
+  "between", "whereas", "whereby", "hereto",
+  // Legal profession terms
+  "lawyer", "lawyers", "solicitor", "solicitors", "barrister", "barristers",
+  // Corporate suffixes as standalone words (split from company names by newline)
+  "limited", "private limited", "incorporated", "corporation",
+  // Common legal phrases that end with "limited" (caught by ALL-CAPS ORG regex)
+  "including but not limited to", "but not limited to", "not limited to",
+  "including but not limited", "but not limited",
+  "including without limitation", "without limitation",
+  // Generic words often false-positive'd
+  "including", "excluding", "provided", "subject",
+  // Contract/document words LLM frequently hallucinates as PERSON
+  "knowledge", "registration", "date", "closing date",
+  "immediately", "submit", "effecting", "documents",
+  "elected", "changes",
 ]);
 
 // Function words to ignore when checking if entity is all-stoplist
@@ -127,6 +153,10 @@ const SKIP_WORDS = new Set([
   "on", "at", "is", "it", "as", "if", "so", "no", "not", "its",
   "this", "that", "with", "from", "but", "all", "any", "each",
   "such", "than", "into", "upon", "per", "via", "re", "vs",
+  // Common English words that should never count as "meaningful" PII tokens
+  "these", "there", "which", "been", "were", "are", "was",
+  "has", "had", "have", "they", "them", "their", "our", "we",
+  "who", "what", "when", "where", "how", "new",
 ]);
 
 const ARTICLES = ["the ", "a ", "an "];
@@ -169,6 +199,18 @@ function isInStoplist(text: string): boolean {
     }
   }
 
+  // Simple plural stemming: "companies"→"company", "branches"→"branch", "firms"→"firm"
+  for (const c of candidates) {
+    const depluralized = c.endsWith("ies") && c.length > 4
+      ? c.slice(0, -3) + "y"       // companies → company
+      : c.endsWith("ses") || c.endsWith("xes") || c.endsWith("ches") || c.endsWith("shes")
+        ? c.slice(0, -2)            // branches → branch
+        : c.endsWith("s") && c.length > 3
+          ? c.slice(0, -1)          // firms → firm
+          : null;
+    if (depluralized && LEGAL_STOPLIST.has(depluralized)) return true;
+  }
+
   return false;
 }
 
@@ -198,6 +240,8 @@ const JURISDICTION_BEFORE = [
   new RegExp(`\\bcompetent\\s+courts?\\s+(?:of|in)\\s+${THE}$`, "i"),
   new RegExp(`\\bregistered\\s+in\\s+${THE}$`, "i"),
   new RegExp(`\\bincorporated\\s+(?:in|under\\s+the\\s+laws?\\s+of)\\s+${THE}$`, "i"),
+  // "Country of Incorporation: England and Wales"
+  new RegExp(`\\bcountry\\s+of\\s+(?:incorporation|formation|organization|registration|origin)\\s*:?\\s*${THE}$`, "i"),
   /\bresolved\s+by\s+$/i,
   /\bpursuant\s+to\s+(?:the\s+)?(?:laws?\s+of\s+)?(?:the\s+)?$/i,
   // Arbitration / venue / forum / seat
@@ -251,11 +295,46 @@ export function filterJurisdictionEntities(entities: DetectedEntity[], text: str
   return entities.filter((e) => !isJurisdictionContext(e, text));
 }
 
+// ── Currency context — "Indian Rupees", "US Dollars" etc. are NOT PII ──────
+
+const CURRENCY_TYPES = new Set(["LOCATION", "NRP", "ADDRESS"]);
+
+// Currency terms that appear AFTER the entity (e.g. "Indian <Rupees>", "US <Dollars>")
+const CURRENCY_AFTER_RE = /^\s*(?:rupees?|dollars?|pounds?|euros?|francs?|yen|yuan|won|krona|kronor|crowns?|pesos?|reals?|rands?|ringgit|baht|lira|dinar|dirham|shillings?|cents?|pence)\b/i;
+
+// Currency terms that appear BEFORE the entity
+// "denominated in <Indian> Rupees", "currency of <New Zealand>", "monetary unit of <India>"
+const CURRENCY_BEFORE_RE = /\b(?:(?:denominated|payable|paid|expressed|converted|valued)\s+in|(?:lawful\s+)?currency\s+of|monetary\s+unit\s+of)\s+$/i;
+
+const CURRENCY_SELF_RE = /\b(?:rupees?|dollars?|pounds?|euros?|francs?|yen|yuan|won|krona|kronor|crowns?|pesos?|reals?|rands?|ringgit|baht|lira|dinar|dirham|shillings?|cents?|pence)\b/i;
+
+function isCurrencyContext(entity: DetectedEntity, text: string): boolean {
+  if (!CURRENCY_TYPES.has(entity.type)) return false;
+
+  // Check if the entity text itself contains a currency term (e.g. "Indian Rupees")
+  if (CURRENCY_SELF_RE.test(entity.text)) return true;
+
+  const after = text.slice(entity.end, Math.min(text.length, entity.end + 40));
+  if (CURRENCY_AFTER_RE.test(after)) return true;
+
+  const before = text.slice(Math.max(0, entity.start - 40), entity.start);
+  if (CURRENCY_BEFORE_RE.test(before)) return true;
+
+  return false;
+}
+
+/** Remove entities that are in currency context (for use after propagation) */
+export function filterCurrencyEntities(entities: DetectedEntity[], text: string): DetectedEntity[] {
+  return entities.filter((e) => !isCurrencyContext(e, text));
+}
+
 export function filterFalsePositives(entities: DetectedEntity[], text?: string): DetectedEntity[] {
   // Collect confirmed high-score texts for cross-reference
   const confirmedTexts = new Set<string>();
   for (const e of entities) {
-    if (e.score >= 0.6) {
+    // Threshold 0.75: LLM discoveries (score=0.65) must NOT self-confirm,
+    // otherwise common words like "these", "submit" survive Rule 1.
+    if (e.score >= 0.75) {
       confirmedTexts.add(e.text.toLowerCase());
       for (const word of e.text.split(/\s+/)) {
         confirmedTexts.add(word.toLowerCase());
@@ -274,6 +353,12 @@ export function filterFalsePositives(entities: DetectedEntity[], text?: string):
     // (they affect legal interpretation and must NOT be anonymized)
     if (text && isJurisdictionContext(e, text)) continue;
 
+    // Rule C: Currency context — "Indian Rupees", "US Dollars" etc. are NOT PII
+    if (text && isCurrencyContext(e, text)) continue;
+
+    // Rule T: Template placeholders — "[insert name of the Successful Bidder]", "[●]", etc.
+    if (/^\[.*\]$/.test(txt.trim())) continue;
+
     // Rule 0: Stop-list
     if (isInStoplist(txt)) continue;
 
@@ -290,6 +375,12 @@ export function filterFalsePositives(entities: DetectedEntity[], text?: string):
       if (txt[0] === txt[0].toLowerCase() && txt[0] !== txt[0].toUpperCase()) {
         if (!confirmedTexts.has(txt.toLowerCase())) continue;
       }
+    }
+
+    // Rule 1b: Single-word PERSON (no space) from NER — likely a false positive
+    // e.g. "Victoria" alone without pattern confirmation
+    if (etype === "PERSON" && !/\s/.test(txt.trim()) && e.score < 0.5 && !(e.reason || "").startsWith("pattern:")) {
+      continue;
     }
 
     // Rule 2: Noisy pattern types + stoplist
