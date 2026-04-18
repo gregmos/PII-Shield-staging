@@ -1,0 +1,18 @@
+# Node.js runtime + build artifacts
+node_modules/
+dist/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.log
+
+# Test / debug
+*.output
+*.bak
+*.tmp
+.pii_shield_dev_cache/
+
+# Backup files from edits in this session
+src/engine/*.ts.bak

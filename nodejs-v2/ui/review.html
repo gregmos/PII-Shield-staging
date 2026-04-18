@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
+  <title>PII Shield Review</title>
+</head>
+<body>
+
+<!--
+  Chrome: topbar + doc-tabs + instruction-bar wrapped together so the whole
+  header block is sticky as a unit (position: sticky on .chrome in CSS).
+  See review.css → .chrome, .sidebar rules for the sticky-layout contract.
+-->
+<header class="chrome">
+  <div class="topbar">
+    <span class="shield-icon">&#x1f6e1;</span>
+    <h1>PII Shield Review</h1>
+    <div class="stats">
+      <div class="stat"><span class="count" id="entity-count">0</span>&nbsp;entities</div>
+      <div class="stat"><span class="count" id="removed-count">0</span>&nbsp;removed</div>
+      <div class="stat"><span class="count" id="added-count">0</span>&nbsp;added</div>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn-theme" id="theme-btn" title="Toggle dark/light theme"></button>
+    <button class="btn-split" id="split-btn" title="Toggle side-by-side view (original vs anonymized)">Split View</button>
+    <button class="btn btn-reset" id="reset-btn">Reset</button>
+    <button class="btn btn-approve" id="approve-btn">Approve</button>
+  </div>
+
+  <!-- Document tabs (bulk mode — shown when start_review receives >= 2 session_ids) -->
+  <div class="doc-tabs" id="doc-tabs" style="display:none;"></div>
+
+  <div class="instruction-bar">
+    <span class="instruction-icon">&#x1f4cb;</span>
+    <span>Review detected PII entities below. <strong>Click</strong> a highlighted entity to remove it (all matching occurrences removed). <strong>Select text</strong> to add missed entities. Click <strong>Approve</strong> when done.</span>
+  </div>
+</header>
+
+<div class="main" id="main-container">
+  <div class="doc-panel">
+    <div class="doc-pane doc-pane-orig">
+      <div class="doc-pane-label">Original (with entities)</div>
+      <div class="doc-content" id="doc-content">Waiting for data from PII Shield…</div>
+    </div>
+    <div class="doc-pane doc-pane-anon">
+      <div class="doc-pane-label">Anonymized</div>
+      <div class="doc-content" id="doc-content-anon"></div>
+    </div>
+  </div>
+  <!--
+    Drag-resize handle between .doc-panel and .sidebar. Logic in
+    review-app.ts: pointerdown on handle → capture pointer → pointermove
+    updates --sidebar-w CSS variable on .main. Final width persisted to
+    localStorage (`pii-sidebar-w`). See initSidebarResize().
+  -->
+  <div class="resize-handle" id="resize-handle" title="Drag to resize sidebar"></div>
+  <div class="sidebar" style="display:flex;flex-direction:column;">
+    <div class="sidebar-header">Detected Entities</div>
+    <!--
+      Filter input — substring-matches entity text across families and
+      added-by-user list. Keyboard shortcut `/` focuses it (handled in
+      review-app.ts keydown listener). Match count updates live as user
+      types. See initSidebarFilter() + renderSidebar() filter block.
+    -->
+    <div class="sidebar-filter">
+      <input type="text" id="filter-input" class="filter-input"
+             placeholder="Filter entities… (press /)"
+             autocomplete="off" spellcheck="false" />
+      <span class="filter-match-count" id="filter-match-count"></span>
+    </div>
+    <div class="entity-list" id="entity-list" style="flex:1;overflow-y:auto;"></div>
+    <div class="how-it-works">
+      <div class="section-title">Keyboard</div>
+      <div class="hint"><span class="kbd">Tab</span> Next entity</div>
+      <div class="hint"><span class="kbd">&#x21E7;Tab</span> Previous entity</div>
+      <div class="hint"><span class="kbd">D</span> Remove focused</div>
+      <div class="hint"><span class="kbd">R</span> Restore focused</div>
+      <div class="hint"><span class="kbd">A</span> Approve</div>
+      <div class="hint"><span class="kbd">Esc</span> Clear focus</div>
+      <div class="section-title" style="margin-top:8px">Mouse</div>
+      <div class="hint"><span class="hint-icon">&#x2715;</span> Click entity to remove</div>
+      <div class="hint"><span class="hint-icon">&#x1F5B1;</span> Select text to add</div>
+    </div>
+  </div>
+</div>
+
+<!--
+  Bottom action bar — sits between .main and .legend so after reviewing a
+  long document the user can Approve without scrolling back up. The "↑ To top"
+  button uses scrollIntoView() on .chrome to scroll the host chat back to
+  the panel header.
+-->
+<div class="bottom-bar" id="bottom-bar">
+  <button class="btn-scroll-top" id="scroll-top-btn" title="Scroll back to top of review panel">&#x2191; To top</button>
+  <button class="btn btn-approve" id="approve-btn-bottom">Approve</button>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--person)"></div> Person</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--org)"></div> Organization</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--location)"></div> Location</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--comm)"></div> Contact</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--financial)"></div> Financial</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--id-doc)"></div> ID / Document</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--medical)"></div> Medical</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--added); border: 1px dashed var(--added)"></div> Added by you</div>
+  <div class="spacer"></div>
+  <div class="legend-item" style="color:var(--text-secondary)">Click entity to remove &middot; Select text to add</div>
+</div>
+
+<div class="selection-toolbar" id="selection-toolbar">
+  <button class="type-btn person" data-type="PERSON">Person</button>
+  <button class="type-btn org" data-type="ORGANIZATION">Org</button>
+  <button class="type-btn location" data-type="LOCATION">Location</button>
+  <button class="type-btn comm" data-type="EMAIL_ADDRESS">Contact</button>
+  <button class="type-btn financial" data-type="CREDIT_CARD">Financial</button>
+  <button class="type-btn id-doc" data-type="US_SSN">ID</button>
+  <button class="type-btn-more" id="type-more-btn" title="More types">&#x22EF;</button>
+  <div class="type-dropdown" id="type-dropdown">
+    <div class="type-dropdown-group">Person</div>
+    <div class="type-dropdown-item" data-type="PERSON"><span class="dot" style="background:var(--person)"></span>Person</div>
+    <div class="type-dropdown-item" data-type="NRP"><span class="dot" style="background:var(--person)"></span>Nationality / Religion / Politics</div>
+    <div class="type-dropdown-group">Contact</div>
+    <div class="type-dropdown-item" data-type="EMAIL_ADDRESS"><span class="dot" style="background:var(--comm)"></span>Email Address</div>
+    <div class="type-dropdown-item" data-type="PHONE_NUMBER"><span class="dot" style="background:var(--comm)"></span>Phone Number</div>
+    <div class="type-dropdown-item" data-type="URL"><span class="dot" style="background:var(--comm)"></span>URL</div>
+    <div class="type-dropdown-item" data-type="IP_ADDRESS"><span class="dot" style="background:var(--comm)"></span>IP Address</div>
+    <div class="type-dropdown-group">Financial</div>
+    <div class="type-dropdown-item" data-type="CREDIT_CARD"><span class="dot" style="background:var(--financial)"></span>Credit Card</div>
+    <div class="type-dropdown-item" data-type="IBAN_CODE"><span class="dot" style="background:var(--financial)"></span>IBAN</div>
+    <div class="type-dropdown-item" data-type="CRYPTO"><span class="dot" style="background:var(--financial)"></span>Crypto Wallet</div>
+    <div class="type-dropdown-group">ID Documents</div>
+    <div class="type-dropdown-item" data-type="US_SSN"><span class="dot" style="background:var(--id-doc)"></span>US SSN</div>
+    <div class="type-dropdown-item" data-type="US_PASSPORT"><span class="dot" style="background:var(--id-doc)"></span>US Passport</div>
+    <div class="type-dropdown-item" data-type="US_DRIVER_LICENSE"><span class="dot" style="background:var(--id-doc)"></span>US Driver License</div>
+    <div class="type-dropdown-item" data-type="UK_NHS"><span class="dot" style="background:var(--id-doc)"></span>UK NHS Number</div>
+    <div class="type-dropdown-item" data-type="UK_NIN"><span class="dot" style="background:var(--id-doc)"></span>UK National Insurance</div>
+    <div class="type-dropdown-item" data-type="UK_PASSPORT"><span class="dot" style="background:var(--id-doc)"></span>UK Passport</div>
+    <div class="type-dropdown-item" data-type="UK_CRN"><span class="dot" style="background:var(--id-doc)"></span>UK Company Reg</div>
+    <div class="type-dropdown-item" data-type="UK_DRIVING_LICENCE"><span class="dot" style="background:var(--id-doc)"></span>UK Driving Licence</div>
+    <div class="type-dropdown-item" data-type="EU_VAT"><span class="dot" style="background:var(--id-doc)"></span>EU VAT Number</div>
+    <div class="type-dropdown-item" data-type="EU_PASSPORT"><span class="dot" style="background:var(--id-doc)"></span>EU Passport</div>
+    <div class="type-dropdown-item" data-type="DE_TAX_ID"><span class="dot" style="background:var(--id-doc)"></span>DE Tax ID</div>
+    <div class="type-dropdown-item" data-type="DE_SOCIAL_SECURITY"><span class="dot" style="background:var(--id-doc)"></span>DE Social Security</div>
+    <div class="type-dropdown-item" data-type="FR_NIR"><span class="dot" style="background:var(--id-doc)"></span>FR NIR (Social Security)</div>
+    <div class="type-dropdown-item" data-type="FR_CNI"><span class="dot" style="background:var(--id-doc)"></span>FR National ID</div>
+    <div class="type-dropdown-item" data-type="IT_FISCAL_CODE"><span class="dot" style="background:var(--id-doc)"></span>IT Fiscal Code</div>
+    <div class="type-dropdown-item" data-type="IT_VAT"><span class="dot" style="background:var(--id-doc)"></span>IT VAT Number</div>
+    <div class="type-dropdown-item" data-type="ES_DNI"><span class="dot" style="background:var(--id-doc)"></span>ES DNI</div>
+    <div class="type-dropdown-item" data-type="ES_NIE"><span class="dot" style="background:var(--id-doc)"></span>ES NIE</div>
+    <div class="type-dropdown-item" data-type="CY_TIC"><span class="dot" style="background:var(--id-doc)"></span>CY Tax ID</div>
+    <div class="type-dropdown-item" data-type="CY_ID_CARD"><span class="dot" style="background:var(--id-doc)"></span>CY ID Card</div>
+    <div class="type-dropdown-group">Medical</div>
+    <div class="type-dropdown-item" data-type="MEDICAL_LICENSE"><span class="dot" style="background:var(--medical)"></span>Medical License</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"><span class="toast-icon"></span><span class="toast-text"></span></div>
+
+<div class="approved-overlay" id="approved-overlay">
+  <div class="approved-card" id="approved-card">
+    <div class="checkmark">&#x2705;</div>
+    <h2>Review Approved</h2>
+    <p id="approved-saved-hint" style="margin-top:12px; font-size:12px; color:var(--text-secondary);">
+      Approved. Send any short message in chat to continue.
+    </p>
+  </div>
+</div>
+
+<script type="module" src="/src/review-app.ts"></script>
+</body>
+</html>

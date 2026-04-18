@@ -1,0 +1,8 @@
+{
+  "name": "pii-shield",
+  "description": "PII Shield — anonymize PII in legal documents. Supports .docx, .pdf, .txt. MCP tools for detection, anonymization, deanonymization, and in-chat HITL review.",
+  "version": "2.0.0",
+  "author": {
+    "name": "Grigorii Moskalev"
+  }
+}

@@ -1,0 +1,93 @@
+{
+  "manifest_version": "0.3",
+  "name": "pii-shield-v2",
+  "display_name": "PII Shield v2",
+  "version": "2.0.0",
+  "description": "Anonymize PII in documents. GLiNER zero-shot NER model bundled (665 MB) — no runtime download, offline-ready after install. Pure Node.js, no Python dependency.",
+  "long_description": "MCP server that anonymizes documents before Claude sees them and restores real data after analysis. PII never enters the API — only file paths and session IDs are exchanged. Uses GLiNER zero-shot NER via ONNX Runtime for high-quality entity recognition in legal documents, with Human-in-the-Loop review via an in-chat MCP Apps panel (no browser required). Supports PDF, DOCX (with tracked changes / redline), and plain text. Includes 17 EU pattern recognizers, entity deduplication, chunked processing for large documents, and full local audit logging. The 665 MB GLiNER ONNX model is BUNDLED inside the extension — zero runtime download, fully offline after install. First-run only needs to install native npm deps (onnxruntime-node + transformers, ~1–2 min). Pure Node.js, no Python dependency.",
+  "author": {
+    "name": "Grigorii Moskalev",
+    "url": "https://www.linkedin.com/in/grigorii-moskalev/"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server.bundle.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server.bundle.mjs"
+      ],
+      "env": {
+        "PII_MIN_SCORE": "${user_config.pii_min_score}",
+        "PII_NER_THRESHOLD": "${user_config.ner_threshold}",
+        "PII_WORK_DIR": "${user_config.work_dir}",
+        "PII_SKIP_REVIEW": "${user_config.skip_review}"
+      },
+      "platform_overrides": {
+        "darwin": {
+          "command": "/usr/bin/env",
+          "args": [
+            "node",
+            "${__dirname}/server.bundle.mjs"
+          ]
+        }
+      }
+    }
+  },
+  "tools": [
+    {"name": "find_file", "description": "Find a file on the host by filename. Searches the configured working directory only."},
+    {"name": "anonymize_text", "description": "Anonymize PII in text"},
+    {"name": "anonymize_file", "description": "Anonymize PII in a file (.pdf, .docx, .txt, .md, .csv). PREFERRED — PII stays on host. Pass review_session_id for HITL re-anonymization."},
+    {"name": "anonymize_docx", "description": "Anonymize PII in .docx preserving formatting"},
+    {"name": "deanonymize_text", "description": "Restore PII to local file (never returns PII to Claude)"},
+    {"name": "deanonymize_docx", "description": "Restore PII in .docx preserving formatting (file only)"},
+    {"name": "get_mapping", "description": "Get placeholder keys and types (no real PII values)"},
+    {"name": "scan_text", "description": "Detect PII without anonymizing (preview mode)"},
+    {"name": "list_entities", "description": "Show status, supported types, and recent sessions"},
+    {"name": "start_review", "description": "Open the HITL review panel in the chat (MCP Apps iframe). PII stays on your machine — decisions travel back via apply_review_overrides."},
+    {"name": "apply_review_overrides", "description": "Apply the user's review decisions (remove false positives, add missed entities). Called by the review panel when the user clicks Approve."},
+    {"name": "anonymize_next_chunk", "description": "Process next chunk of a chunked anonymization session."},
+    {"name": "get_full_anonymized_text", "description": "Assemble all processed chunks and finalize the anonymization."},
+    {"name": "resolve_path", "description": "Zero-config file path resolution via marker file BFS."},
+    {"name": "apply_tracked_changes", "description": "Apply tracked changes (redline) to a .docx file with Word-native revision marks."}
+  ],
+  "keywords": ["pii", "anonymize", "gdpr", "privacy", "legal", "ner", "gliner", "zero-shot", "onnx", "redline", "tracked-changes"],
+  "license": "MIT",
+  "user_config": {
+    "pii_min_score": {
+      "type": "string",
+      "title": "Minimum pattern score",
+      "description": "Minimum confidence threshold for pattern recognizers (0.0-1.0). Lower = more recall, more false positives. Default 0.30 matches the tuned sweet spot for legal documents.",
+      "default": "0.30",
+      "required": false
+    },
+    "ner_threshold": {
+      "type": "string",
+      "title": "NER threshold",
+      "description": "Minimum confidence threshold for GLiNER NER model (0.0-1.0). Lower = more recall, more noise (generic words like 'account', 'banks' slip through). Default 0.30 cuts most noise while retaining real corporate names.",
+      "default": "0.30",
+      "required": false
+    },
+    "work_dir": {
+      "type": "string",
+      "title": "Working directory",
+      "description": "Folder path where your documents are stored. Used by find_file and anonymize_file for automatic path resolution.",
+      "default": "",
+      "required": false
+    },
+    "skip_review": {
+      "type": "string",
+      "title": "Skip HITL review",
+      "description": "Set to 'true' to skip the human review step after anonymization.",
+      "default": "false",
+      "required": false
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["win32", "darwin", "linux"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}

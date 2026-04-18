@@ -1,0 +1,49 @@
+{
+  "name": "pii-shield-v2",
+  "version": "2.0.0",
+  "type": "module",
+  "description": "PII Shield MCP Server v2 — anonymize PII in legal documents (Node.js, MCP Apps UI, pure-JS DOCX)",
+  "main": "dist/server.bundle.mjs",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "build:ui": "vite build",
+    "build:plugin": "node plugin/build-plugin.mjs",
+    "start": "node dist/server.bundle.mjs",
+    "dev": "npx tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke": "node scripts/smoke-protocol.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/ext-apps": "^1.6.0",
+    "@ansonlai/docx-redline-js": "^0.1.4",
+    "@xenova/transformers": "^2.17.0",
+    "@xmldom/xmldom": "^0.9.0",
+    "docx": "^8.0.0",
+    "jszip": "^3.10.1",
+    "gliner": "^0.0.19",
+    "onnxruntime-node": "^1.17.0",
+    "pdf.js-extract": "^0.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.20.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0",
+    "vite": "^6.0.0",
+    "vite-plugin-singlefile": "^2.3.0",
+    "vitest": "^1.0.0",
+    "zod": "^3.23.0"
+  },
+  "overrides": {
+    "onnxruntime-node": "$onnxruntime-node"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "author": {
+    "name": "Grigorii Moskalev"
+  },
+  "license": "MIT"
+}

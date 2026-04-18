@@ -1,0 +1,540 @@
+/*
+ * PII Shield review iframe UI — stylesheet.
+ *
+ * Ported verbatim from v1.x `nodejs/assets/review_ui.html` inline <style>
+ * block, with bulk-mode doc-tabs trimmed (v2.0.0 opens one review at a time
+ * via MCP Apps — if bulk support is needed later, the host can open one
+ * iframe per session).
+ *
+ * No host theming variables are consumed yet — @modelcontextprotocol/ext-apps
+ * exposes host CSS vars via `applyHostStyleVariables`, but we prefer our
+ * branded light/dark palette for now so the panel looks consistent across
+ * hosts.  Users can still toggle dark/light with the 🌙/☀️ button.
+ */
+
+:root {
+  --bg: #fafafa; --surface: #ffffff; --text: #1a1a2e; --text-secondary: #6b7280;
+  --border: #e5e7eb; --accent: #10b981; --accent-hover: #059669;
+  --person: #3b82f6; --person-bg: #dbeafe;
+  --org: #8b5cf6; --org-bg: #ede9fe;
+  --location: #10b981; --location-bg: #d1fae5;
+  --comm: #f59e0b; --comm-bg: #fef3c7;
+  --financial: #ef4444; --financial-bg: #fee2e2;
+  --id-doc: #ec4899; --id-doc-bg: #fce7f3;
+  --medical: #14b8a6; --medical-bg: #ccfbf1;
+  --other: #6b7280; --other-bg: #f3f4f6;
+  --danger: #ef4444; --danger-bg: #fee2e2;
+  --added: #0ea5e9; --added-bg: #e0f2fe;
+}
+.dark {
+  --bg: #0f172a; --surface: #1e293b; --text: #e2e8f0; --text-secondary: #94a3b8;
+  --border: #334155; --accent: #34d399; --accent-hover: #10b981;
+  --person: #60a5fa; --person-bg: #1e3a5f;
+  --org: #a78bfa; --org-bg: #2d1b69;
+  --location: #34d399; --location-bg: #064e3b;
+  --comm: #fbbf24; --comm-bg: #78350f;
+  --financial: #f87171; --financial-bg: #7f1d1d;
+  --id-doc: #f472b6; --id-doc-bg: #831843;
+  --medical: #2dd4bf; --medical-bg: #134e4a;
+  --other: #9ca3af; --other-bg: #374151;
+  --danger: #f87171; --danger-bg: #7f1d1d;
+  --added: #38bdf8; --added-bg: #0c4a6e;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --bg: #0f172a; --surface: #1e293b; --text: #e2e8f0; --text-secondary: #94a3b8;
+    --border: #334155; --accent: #34d399; --accent-hover: #10b981;
+    --person: #60a5fa; --person-bg: #1e3a5f;
+    --org: #a78bfa; --org-bg: #2d1b69;
+    --location: #34d399; --location-bg: #064e3b;
+    --comm: #fbbf24; --comm-bg: #78350f;
+    --financial: #f87171; --financial-bg: #7f1d1d;
+    --id-doc: #f472b6; --id-doc-bg: #831843;
+    --medical: #2dd4bf; --medical-bg: #134e4a;
+    --other: #9ca3af; --other-bg: #374151;
+    --danger: #f87171; --danger-bg: #7f1d1d;
+    --added: #38bdf8; --added-bg: #0c4a6e;
+  }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+/*
+ * Body uses natural block flow. NO `display: flex`, NO `min-height: 100vh`.
+ * Previous flex-column + min-height 100vh variant created a circular sizing
+ * dependency inside the MCP Apps iframe: body min-height bound to iframe
+ * viewport, iframe bound to body.scrollHeight, nothing grew — main collapsed
+ * to 0 height. Natural block flow lets each child take its content height,
+ * body grows to sum of children, MCP Apps ResizeObserver sees true scrollHeight
+ * and resizes iframe accordingly.
+ */
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.6;
+}
+
+/*
+ * Chrome — topbar + doc-tabs + instruction-bar wrapped together. Plain block
+ * element: MCP Apps iframe auto-grows to body.scrollHeight so there is no
+ * internal scrolling ancestor for `position: sticky` to attach to (sticky
+ * inside an auto-sized iframe is a no-op). Navigation instead uses the
+ * "↑ To top" button at the bottom + scrollIntoView-based entity jumps —
+ * see review-app.ts. OpenAI Apps SDK UI Guidelines also explicitly advise
+ * against internal scrolling inside auto-sized iframe cards.
+ */
+.chrome {
+  background: var(--surface);
+}
+
+/* Top Bar — inside .chrome, no independent sticky needed */
+.topbar {
+  display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.topbar h1 { font-size: 13px; font-weight: 600; flex-shrink: 0; }
+.topbar .shield-icon { font-size: 16px; }
+.stats { display: flex; gap: 6px; margin-left: 8px; }
+.stat {
+  display: flex; align-items: center; gap: 3px; font-size: 11px;
+  color: var(--text-secondary); padding: 2px 6px; border-radius: 5px;
+  background: var(--bg);
+}
+.stat .count { font-weight: 600; color: var(--text); }
+.spacer { flex: 1; }
+.btn {
+  padding: 6px 12px; border-radius: 6px; border: none; cursor: pointer;
+  font-size: 12px; font-weight: 600; transition: all 0.15s;
+}
+.btn-approve { background: var(--accent); color: white; }
+.btn-approve:hover { background: var(--accent-hover); transform: translateY(-1px); }
+.btn-approve:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+.btn-reset {
+  background: transparent; color: var(--text-secondary); border: 1px solid var(--border);
+}
+.btn-reset:hover { background: var(--bg); }
+
+/*
+ * Main Layout — flex row for doc-panel + sidebar side-by-side. NO flex:1
+ * on itself, NO min-height — just takes its content height. Body and iframe
+ * size to fit naturally.
+ */
+.main { display: flex; }
+
+/* Document Panel */
+.doc-panel { flex: 1; padding: 16px 20px; min-width: 0; }
+.doc-content {
+  max-width: none; margin: 0; font-size: 14px; line-height: 1.6;
+  white-space: pre-wrap; word-wrap: break-word;
+}
+
+/* Entity Highlights */
+.entity {
+  padding: 1px 4px; border-radius: 4px; cursor: pointer;
+  transition: all 0.15s; position: relative; border-bottom: 2px solid;
+}
+.entity:hover { filter: brightness(1.15); }
+:root:not(.dark) .entity:hover { filter: brightness(0.9); }
+.entity.removed {
+  text-decoration: line-through; opacity: 0.4;
+  border-bottom-style: dashed;
+}
+.entity-PERSON { background: var(--person-bg); border-color: var(--person); color: var(--person); }
+.entity-ORG { background: var(--org-bg); border-color: var(--org); color: var(--org); }
+.entity-LOCATION { background: var(--location-bg); border-color: var(--location); color: var(--location); }
+.entity-COMM { background: var(--comm-bg); border-color: var(--comm); color: var(--comm); }
+.entity-FINANCIAL { background: var(--financial-bg); border-color: var(--financial); color: var(--financial); }
+.entity-ID_DOC { background: var(--id-doc-bg); border-color: var(--id-doc); color: var(--id-doc); }
+.entity-MEDICAL { background: var(--medical-bg); border-color: var(--medical); color: var(--medical); }
+.entity-OTHER { background: var(--other-bg); border-color: var(--other); color: var(--other); }
+.entity-added { border-style: dashed; background: var(--added-bg) !important; border-color: var(--added) !important; color: var(--added) !important; }
+
+/* Entity Tooltip — minimal type label on hover */
+.entity-tooltip {
+  display: none; position: absolute; bottom: calc(100% + 4px); left: 50%;
+  transform: translateX(-50%); background: var(--surface); border: 1px solid var(--border);
+  border-radius: 5px; padding: 3px 8px; white-space: nowrap; z-index: 50;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12); font-size: 10px;
+  font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+  pointer-events: none;
+}
+.entity:hover .entity-tooltip { display: block; }
+
+/* Resize handle between .doc-panel and .sidebar — lets the user drag to
+ * widen/narrow the sidebar. Lives inside .main (flex row), 6px wide with
+ * col-resize cursor + accent highlight on hover/active. See review-app.ts
+ * initSidebarResize() for the pointerdown/move/up logic and localStorage
+ * persistence under the `pii-sidebar-w` key. Safe inside MCP Apps iframe —
+ * auto-size protocol only affects height, so changing sidebar width via
+ * CSS variable doesn't trigger any resize side effects.
+ */
+.resize-handle {
+  flex: 0 0 6px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  touch-action: none; /* prevent scroll-pull on touchpads during drag */
+  position: relative;
+}
+.resize-handle:hover,
+.resize-handle.dragging {
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+/* Thin visible line in the middle of the handle so users see it's draggable */
+.resize-handle::before {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 2px; right: 2px;
+  border-left: 1px solid var(--border);
+}
+.resize-handle:hover::before,
+.resize-handle.dragging::before {
+  border-left-color: var(--accent);
+}
+
+/* Sidebar — plain flex-row child. `position: sticky` removed because it
+ * requires an internal scrolling ancestor which MCP Apps auto-sized iframes
+ * don't provide. Natural `align-items: stretch` (default) lets the sidebar
+ * grow to the same height as `.doc-panel` so the row never collapses even
+ * when doc content temporarily lays out at 0 height. The `.entity-list`
+ * child has its own `overflow-y: auto` (inline style in review.html) if the
+ * list gets tall.
+ *
+ * Width is controlled via `--sidebar-w` CSS variable (set inline on .main
+ * by initSidebarResize() during drag + restored from localStorage on boot).
+ * Default 240px matches pre-resize UX.
+ */
+.sidebar {
+  width: var(--sidebar-w, 240px); border-left: 1px solid var(--border); background: var(--surface);
+  flex-shrink: 0;
+}
+
+/* Sidebar filter (search) — substring-match across entity families + added
+ * entities. Narrow bar above .entity-list, inherits sidebar width. Keyboard
+ * shortcut `/` focuses the input (see review-app.ts keydown handler). */
+.sidebar-filter {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.filter-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+.filter-input:focus { border-color: var(--accent); }
+.filter-match-count {
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.sidebar-header {
+  padding: 10px 12px; border-bottom: 1px solid var(--border);
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.5px; color: var(--text-secondary);
+}
+.entity-list { padding: 6px; }
+.entity-item {
+  display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+  border-radius: 5px; cursor: pointer; transition: background 0.1s;
+  font-size: 12px;
+}
+.entity-item:hover { background: var(--bg); }
+.entity-item.removed { opacity: 0.4; text-decoration: line-through; }
+.entity-item .idx { color: var(--text-secondary); font-size: 11px; width: 20px; }
+.entity-item .type-badge {
+  font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px;
+  text-transform: uppercase; letter-spacing: 0.3px; flex-shrink: 0;
+}
+.type-PERSON .type-badge { background: var(--person-bg); color: var(--person); }
+.type-ORG .type-badge { background: var(--org-bg); color: var(--org); }
+.type-LOCATION .type-badge { background: var(--location-bg); color: var(--location); }
+.type-COMM .type-badge { background: var(--comm-bg); color: var(--comm); }
+.type-FINANCIAL .type-badge { background: var(--financial-bg); color: var(--financial); }
+.type-ID_DOC .type-badge { background: var(--id-doc-bg); color: var(--id-doc); }
+.type-MEDICAL .type-badge { background: var(--medical-bg); color: var(--medical); }
+.type-OTHER .type-badge { background: var(--other-bg); color: var(--other); }
+.entity-item .text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entity-item .score { color: var(--text-secondary); font-size: 11px; }
+
+/* Selection Toolbar */
+.selection-toolbar {
+  display: none; position: fixed; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+  z-index: 200; gap: 4px; flex-wrap: wrap;
+}
+.selection-toolbar.visible { display: flex; }
+.selection-toolbar .type-btn {
+  padding: 6px 12px; border-radius: 6px; border: none; cursor: pointer;
+  font-size: 12px; font-weight: 500; transition: all 0.1s;
+  background: var(--bg); color: var(--text);
+}
+.selection-toolbar .type-btn:hover { filter: brightness(0.9); transform: translateY(-1px); }
+.selection-toolbar .type-btn.person { background: var(--person-bg); color: var(--person); }
+.selection-toolbar .type-btn.org { background: var(--org-bg); color: var(--org); }
+.selection-toolbar .type-btn.location { background: var(--location-bg); color: var(--location); }
+.selection-toolbar .type-btn.comm { background: var(--comm-bg); color: var(--comm); }
+.selection-toolbar .type-btn.financial { background: var(--financial-bg); color: var(--financial); }
+.selection-toolbar .type-btn.id-doc { background: var(--id-doc-bg); color: var(--id-doc); }
+.selection-toolbar .type-btn.medical { background: var(--medical-bg); color: var(--medical); }
+.selection-toolbar .type-btn.other { background: var(--other-bg); color: var(--other); }
+.selection-toolbar .type-btn-more {
+  padding: 6px 8px; border-radius: 6px; border: none; cursor: pointer;
+  font-size: 14px; font-weight: 600; background: var(--bg); color: var(--text-secondary);
+  transition: all 0.1s; line-height: 1;
+}
+.selection-toolbar .type-btn-more:hover { background: var(--border); }
+.type-dropdown {
+  display: none; position: absolute; bottom: calc(100% + 4px); right: 0;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); z-index: 210;
+  max-height: 280px; overflow-y: auto; min-width: 200px;
+}
+.type-dropdown.visible { display: block; }
+.type-dropdown-group {
+  padding: 4px 8px; font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.5px; color: var(--text-secondary); margin-top: 4px;
+}
+.type-dropdown-group:first-child { margin-top: 0; }
+.type-dropdown-item {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 5px;
+  cursor: pointer; font-size: 12px; transition: background 0.1s;
+}
+.type-dropdown-item:hover { background: var(--bg); }
+.type-dropdown-item .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+/* Approved Overlay */
+.approved-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+  z-index: 300; align-items: center; justify-content: center;
+}
+.approved-overlay.visible { display: flex; }
+.approved-card {
+  background: var(--surface); border-radius: 16px; padding: 48px 64px;
+  text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+}
+.approved-card .checkmark { font-size: 64px; margin-bottom: 16px; }
+.approved-card h2 { font-size: 24px; margin-bottom: 8px; }
+.approved-card p { color: var(--text-secondary); font-size: 14px; }
+
+/* Legend — natural block after .main, flows at end of content */
+.legend {
+  display: flex; gap: 16px; padding: 8px 24px; background: var(--surface);
+  border-top: 1px solid var(--border); font-size: 12px; color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+.legend-item { display: flex; align-items: center; gap: 4px; }
+.legend-dot { width: 10px; height: 10px; border-radius: 3px; }
+
+/* Bottom action bar — duplicates the top Approve button so the user can
+ * approve after reviewing a long doc without scrolling back up, and adds a
+ * "↑ To top" button that uses scrollIntoView to bring the chrome back into
+ * the host chat viewport. Sits between .main and .legend.
+ */
+.bottom-bar {
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  padding: 16px 24px; border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.bottom-bar .btn-scroll-top {
+  padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text-secondary); cursor: pointer;
+  font-size: 13px; font-weight: 500; transition: all 0.15s;
+}
+.bottom-bar .btn-scroll-top:hover { border-color: var(--accent); color: var(--accent); }
+.bottom-bar .btn-approve { padding: 8px 20px; border-radius: 8px; font-size: 13px; }
+
+/* Flash-highlight animation applied briefly after scrollToEntity so the user
+ * can visually locate the jumped-to entity in a dense document. Triggered on
+ * sidebar entity click and Tab/Shift+Tab keyboard navigation.
+ */
+.entity.flash-highlight { animation: pii-flash 1.2s ease; }
+@keyframes pii-flash {
+  0%, 100% { outline: 0 solid var(--accent); outline-offset: 0; }
+  30%      { outline: 3px solid var(--accent); outline-offset: 3px; }
+}
+
+/* Group hover — highlight all matching entities */
+.entity.group-hover { outline: 2px solid currentColor; outline-offset: 1px; }
+.entity-item.group-hover { background: var(--bg); }
+
+/* Toast notification */
+.toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 20px; box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+  font-size: 13px; color: var(--text); z-index: 400;
+  opacity: 0; transition: opacity 0.2s, transform 0.2s; pointer-events: none;
+  display: flex; align-items: center; gap: 8px;
+}
+.toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast .toast-icon { font-size: 16px; }
+
+/* Sidebar group count badge */
+.group-count {
+  font-size: 11px; color: var(--text-secondary); background: var(--bg);
+  padding: 1px 6px; border-radius: 4px; flex-shrink: 0; font-weight: 500;
+}
+
+/* Sidebar family variants (indented sub-items) */
+.entity-item.variant { padding-left: 32px; font-size: 12px; opacity: 0.85; }
+.entity-item .family-toggle {
+  font-size: 10px; width: 16px; text-align: center; cursor: pointer;
+  color: var(--text-secondary); flex-shrink: 0; user-select: none;
+  transition: transform 0.15s;
+}
+.entity-item .family-toggle.collapsed { transform: rotate(-90deg); }
+
+/* HTML-mode document (docx formatting) */
+.doc-content.html-mode { white-space: normal; }
+.doc-content.html-mode p { margin-bottom: 0.6em; }
+.doc-content.html-mode h1 { font-size: 1.5em; font-weight: 700; margin: 0.8em 0 0.4em; }
+.doc-content.html-mode h2 { font-size: 1.3em; font-weight: 600; margin: 0.7em 0 0.3em; }
+.doc-content.html-mode h3 { font-size: 1.15em; font-weight: 600; margin: 0.6em 0 0.3em; }
+.doc-content.html-mode h4 { font-size: 1.05em; font-weight: 600; margin: 0.5em 0 0.2em; }
+.doc-content.html-mode b, .doc-content.html-mode strong { font-weight: 700; }
+.doc-content.html-mode i, .doc-content.html-mode em { font-style: italic; }
+.doc-content.html-mode u { text-decoration: underline; }
+
+/* Instruction bar — inside .chrome, stacks naturally under topbar/doc-tabs */
+.instruction-bar {
+  display: flex; align-items: center; gap: 8px; padding: 8px 24px;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+  font-size: 12px; color: var(--text-secondary); line-height: 1.5;
+}
+
+/* Document tabs — shown only in bulk review (2+ sessions). Inside .chrome,
+ * stacks between topbar and instruction-bar. One button per document with
+ * status icon (●/○/✅). Right-aligned progress counter.
+ */
+.doc-tabs {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+.doc-tab {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; cursor: pointer;
+  color: var(--text-secondary);
+  border-bottom: 2px solid transparent;
+  font-size: 12px;
+  white-space: nowrap;
+  transition: color 0.15s, background 0.15s;
+}
+.doc-tab:hover { color: var(--text); background: var(--bg); }
+.doc-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+.doc-tab.approved { opacity: 0.7; }
+.doc-tab.approved.active { opacity: 1; }
+.doc-tab .status-icon { font-size: 12px; }
+.bulk-progress {
+  margin-left: auto;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.bulk-progress .count { font-weight: 600; color: var(--accent); }
+.instruction-bar .instruction-icon { font-size: 16px; flex-shrink: 0; }
+.instruction-bar strong { color: var(--text); }
+
+/* Sidebar action buttons (remove/restore) */
+.entity-item .action-btn {
+  width: 22px; height: 22px; border-radius: 4px; border: 1px solid transparent;
+  background: transparent; cursor: pointer; font-size: 12px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity 0.15s, background 0.1s;
+  margin-left: auto;
+}
+.entity-item:hover .action-btn { opacity: 1; }
+.entity-item .action-btn.remove-btn { color: var(--danger); }
+.entity-item .action-btn.remove-btn:hover { background: var(--danger-bg); border-color: var(--danger); }
+.entity-item .action-btn.restore-btn { color: var(--accent); }
+.entity-item .action-btn.restore-btn:hover { background: var(--location-bg); border-color: var(--accent); }
+.entity-item.removed .action-btn.restore-btn { opacity: 0.8; }
+
+/* How it works section in sidebar */
+.how-it-works {
+  padding: 12px 16px; border-top: 1px solid var(--border);
+  margin-top: auto; font-size: 11px; color: var(--text-secondary); line-height: 1.8;
+}
+.how-it-works .section-title {
+  text-align: center; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 1px; color: var(--text-secondary); margin-bottom: 6px;
+  display: flex; align-items: center; gap: 8px;
+}
+.how-it-works .section-title::before,
+.how-it-works .section-title::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+.how-it-works .hint { display: flex; align-items: center; gap: 6px; }
+.how-it-works .hint-icon { width: 16px; text-align: center; flex-shrink: 0; }
+
+/* Keyboard focus */
+.entity.focused { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+.entity-item.focused {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  outline: 2px solid var(--accent); outline-offset: -2px;
+}
+.kbd {
+  display: inline-block; font-size: 10px; font-family: monospace; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 3px; padding: 0px 4px; margin-right: 2px;
+  font-weight: 600; line-height: 1.6; min-width: 16px; text-align: center;
+}
+
+/* Split view */
+.btn-split {
+  padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border);
+  cursor: pointer; font-size: 12px; font-weight: 500; background: var(--bg); color: var(--text-secondary);
+  transition: all 0.15s;
+}
+.btn-split:hover { border-color: var(--accent); color: var(--accent); }
+.btn-split.active { background: var(--accent); color: white; border-color: var(--accent); }
+.doc-panel { position: relative; }
+.main.split-view .doc-panel { display: flex; gap: 0; padding: 0; }
+.doc-pane { flex: 1; overflow-y: auto; padding: 32px 24px; }
+.doc-pane .doc-content { max-width: none; }
+.doc-pane-anon { border-left: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 60%, var(--surface)); }
+.doc-pane-label {
+  position: sticky; top: 0; z-index: 10; padding: 8px 24px; font-size: 11px;
+  font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary);
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.main:not(.split-view) .doc-pane-orig { display: contents; }
+.main:not(.split-view) .doc-pane-orig .doc-pane-label { display: none; }
+.main:not(.split-view) .doc-pane-anon { display: none; }
+/* Anonymized text placeholder highlights */
+.anon-placeholder { padding: 1px 4px; border-radius: 3px; font-weight: 500; font-size: 0.9em; }
+.anon-placeholder.ph-PERSON { background: var(--person-bg); color: var(--person); }
+.anon-placeholder.ph-ORG { background: var(--org-bg); color: var(--org); }
+.anon-placeholder.ph-LOCATION { background: var(--location-bg); color: var(--location); }
+.anon-placeholder.ph-COMM { background: var(--comm-bg); color: var(--comm); }
+.anon-placeholder.ph-FINANCIAL { background: var(--financial-bg); color: var(--financial); }
+.anon-placeholder.ph-ID_DOC { background: var(--id-doc-bg); color: var(--id-doc); }
+.anon-placeholder.ph-MEDICAL { background: var(--medical-bg); color: var(--medical); }
+.anon-placeholder.ph-OTHER { background: var(--other-bg); color: var(--other); }
+.anon-placeholder.ph-added { border: 1px dashed var(--added); background: var(--added-bg); color: var(--added); }
+.anon-restored { opacity: 0.4; text-decoration: line-through; font-style: italic; }
+
+/* Theme toggle */
+.btn-theme {
+  padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border);
+  cursor: pointer; font-size: 14px; background: var(--bg); color: var(--text-secondary);
+  transition: all 0.15s; line-height: 1;
+}
+.btn-theme:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
