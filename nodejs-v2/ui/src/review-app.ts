@@ -65,6 +65,10 @@ interface BlockMapEntry {
 
 interface SessionPayload {
   session_id: string;
+  /** v2.1.3: doc_id scopes the payload to a single PerDocReview within a
+   *  multi-file session. For legacy single-doc sessions this is omitted
+   *  and the server applies overrides to documents[0]. */
+  doc_id?: string;
   original_text?: string;
   /** v2.0.0 server field name. */
   html_text?: string;
@@ -113,6 +117,9 @@ function escapeHtml(str: string): string {
 // ── State ───────────────────────────────────────────────────────────────────
 
 let SESSION_ID = "";
+/** v2.1.3: doc_id for the currently loaded single-session review (empty when
+ *  the server didn't emit one — legacy single-doc flow). */
+let DOC_ID = "";
 let originalText = "";
 let originalHtml = "";
 let anonymizedText = "";
@@ -142,6 +149,8 @@ let sidebarFilter = "";
 
 interface BulkSession {
   session_id: string;
+  /** v2.1.3: per-doc id inside a multi-file session. Empty for legacy single-doc. */
+  doc_id: string;
   source_filename: string;
   approved: boolean;
   /** Cached original payload from the server. */
@@ -913,9 +922,17 @@ async function approve(): Promise<void> {
             end: e.end,
           })),
         };
+        // v2.1.3: include doc_id so the server can route overrides to the
+        // correct PerDocReview inside a multi-file session. For legacy
+        // single-doc sessions the server falls back to documents[0].
+        const args: Record<string, unknown> = {
+          session_id: s.session_id,
+          overrides,
+        };
+        if (s.doc_id) args.doc_id = s.doc_id;
         await app.callServerTool({
           name: "apply_review_overrides",
-          arguments: { session_id: s.session_id, overrides },
+          arguments: args,
         });
       }
       renderDocTabs();
@@ -946,9 +963,16 @@ async function approve(): Promise<void> {
   };
 
   try {
+    const args: Record<string, unknown> = {
+      session_id: SESSION_ID,
+      overrides,
+    };
+    // v2.1.3: include doc_id when server emitted one (multi-doc or
+    // single-doc session with explicit doc id).
+    if (DOC_ID) args.doc_id = DOC_ID;
     await app.callServerTool({
       name: "apply_review_overrides",
-      arguments: { session_id: SESSION_ID, overrides },
+      arguments: args,
     });
     $("approved-overlay").classList.add("visible");
   } catch (err) {
@@ -1162,6 +1186,7 @@ document.addEventListener("dblclick", (e) => setTimeout(() => showToolbarForSele
 function initBulk(sessions: SessionPayload[]): void {
   bulkSessions = sessions.map<BulkSession>((s) => ({
     session_id: s.session_id,
+    doc_id: s.doc_id || "",
     source_filename: s.source_filename || s.session_id,
     approved: !!s.approved,
     payload: s,
@@ -1343,6 +1368,7 @@ function propagateRestoreToSiblings(searchText: string, type: string): void {
 
 function loadSession(payload: SessionPayload): void {
   SESSION_ID = payload.session_id || "";
+  DOC_ID = payload.doc_id || "";
   originalText = payload.original_text || "";
   originalHtml = payload.html_text || payload.original_html || "";
   anonymizedText = payload.anonymized_text || "";

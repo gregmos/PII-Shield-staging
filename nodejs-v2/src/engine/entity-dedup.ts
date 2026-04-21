@@ -482,7 +482,7 @@ export function cleanBoundaries(text: string, entities: DetectedEntity[]): Detec
 
 // ── 4. Placeholder assignment (family-based dedup) ───────────────────────────
 
-interface FamilyInfo {
+export interface FamilyInfo {
   familyNumber: number;
   variantCounter: number;
 }
@@ -503,6 +503,144 @@ export function createPlaceholderState(): PlaceholderState {
     seenFamily: new Map(),
     mapping: {},
   };
+}
+
+// ── Serde & reconstruction ───────────────────────────────────────────────────
+
+/**
+ * JSON-safe shape of PlaceholderState. Maps become entry arrays; everything
+ * else is already plain JSON. Persisted inside `MappingData.metadata.placeholder_state`
+ * so that `anonymize_file(..., session_id)` can extend an existing pool
+ * across process restarts and Cowork chat sessions.
+ */
+export interface SerializedPlaceholderState {
+  schema_version: 1;
+  typeCounters: Array<[string, number]>;
+  seenExact: Array<[string, string]>;
+  seenFamily: Array<[string, FamilyInfo]>;
+  mapping: Record<string, string>;
+}
+
+export function serializePlaceholderState(
+  s: PlaceholderState,
+): SerializedPlaceholderState {
+  return {
+    schema_version: 1,
+    typeCounters: Array.from(s.typeCounters.entries()),
+    seenExact: Array.from(s.seenExact.entries()),
+    seenFamily: Array.from(s.seenFamily.entries()).map(([k, v]) => [
+      k,
+      { familyNumber: v.familyNumber, variantCounter: v.variantCounter },
+    ]),
+    mapping: { ...s.mapping },
+  };
+}
+
+export function deserializePlaceholderState(
+  x: SerializedPlaceholderState,
+): PlaceholderState {
+  return {
+    typeCounters: new Map(x.typeCounters),
+    seenExact: new Map(x.seenExact),
+    seenFamily: new Map(x.seenFamily.map(([k, v]) => [k, { ...v }])),
+    mapping: { ...x.mapping },
+  };
+}
+
+/**
+ * Best-effort reconstruction of PlaceholderState from just the mapping
+ * Record. Used for legacy sessions that predate serialized state (created
+ * before v2.1). The resulting state is good enough for extending the pool:
+ * - `seenExact` is a full inversion of mapping (preserves reuse-on-exact-match)
+ * - `typeCounters` is the max family number per etype (no new collisions)
+ * - `seenFamily` registers each family head at its normalized text, and
+ *   variantCounter is the max variant letter seen
+ * - FamilyInfo.variantCounter is a max over observed variants; orphan
+ *   variants (no head in mapping) register as their own families
+ * - etype is inferred by inverting `TAG_NAMES`; unknown tags pass through
+ */
+export function reconstructPlaceholderState(
+  mapping: Record<string, string>,
+): PlaceholderState {
+  const state = createPlaceholderState();
+  state.mapping = { ...mapping };
+
+  const tagToEtype: Record<string, string> = {};
+  for (const [etype, tag] of Object.entries(TAG_NAMES)) {
+    if (!(tag in tagToEtype)) tagToEtype[tag] = etype;
+  }
+  const etypeFor = (tag: string): string => tagToEtype[tag] || tag;
+
+  // First pass — heads, typeCounters, seenExact.
+  const headKeyToPlaceholder = new Map<string, string>(); // `${etype}::${number}` → placeholder
+  for (const [ph, raw] of Object.entries(mapping)) {
+    const parsed = parsePlaceholderStructure(ph);
+    if (!parsed) continue;
+    const etype = etypeFor(parsed.tag);
+    const prevMax = state.typeCounters.get(etype) || 0;
+    if (parsed.number > prevMax) state.typeCounters.set(etype, parsed.number);
+    state.seenExact.set(`${etype}::${normalize(raw)}`, ph);
+    if (!parsed.variant) {
+      headKeyToPlaceholder.set(`${etype}::${parsed.number}`, ph);
+      state.seenFamily.set(`${etype}::${normalize(raw)}`, {
+        familyNumber: parsed.number,
+        variantCounter: 0,
+      });
+    }
+  }
+
+  // Second pass — variants bump the head's variantCounter, or register orphan.
+  for (const [ph, raw] of Object.entries(mapping)) {
+    const parsed = parsePlaceholderStructure(ph);
+    if (!parsed || !parsed.variant) continue;
+    const etype = etypeFor(parsed.tag);
+    const variantNum = variantLetterToNumber(parsed.variant);
+    const headPh = headKeyToPlaceholder.get(`${etype}::${parsed.number}`);
+    if (headPh) {
+      const headRaw = mapping[headPh];
+      const info = state.seenFamily.get(`${etype}::${normalize(headRaw)}`);
+      if (info && variantNum > info.variantCounter) info.variantCounter = variantNum;
+    } else {
+      // Variant without head in mapping — treat as a quasi-head.
+      state.seenFamily.set(`${etype}::${normalize(raw)}`, {
+        familyNumber: parsed.number,
+        variantCounter: 0,
+      });
+    }
+  }
+
+  return state;
+}
+
+function parsePlaceholderStructure(ph: string): {
+  prefix: string;
+  tag: string;
+  number: number;
+  variant: string;
+} | null {
+  const outer = /^<(.+)>$/.exec(ph);
+  if (!outer) return null;
+  const parts = outer[1].split("_");
+  if (parts.length < 2) return null;
+  const last = parts[parts.length - 1];
+  const m = /^(\d+)([a-z])?$/.exec(last);
+  if (!m) return null;
+  const number = parseInt(m[1], 10);
+  const variant = m[2] || "";
+  let tagParts = parts.slice(0, -1);
+  let prefix = "";
+  if (tagParts.length > 1 && /^D\d+$/.test(tagParts[0])) {
+    prefix = tagParts[0];
+    tagParts = tagParts.slice(1);
+  }
+  return { prefix, tag: tagParts.join("_"), number, variant };
+}
+
+function variantLetterToNumber(v: string): number {
+  if (v.length === 1 && v >= "a" && v <= "z") {
+    return v.charCodeAt(0) - 96;
+  }
+  return 0;
 }
 
 function getOrCreatePlaceholder(

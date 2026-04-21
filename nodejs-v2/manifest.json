@@ -3,8 +3,8 @@
   "name": "pii-shield-v2",
   "display_name": "PII Shield v2",
   "version": "2.0.0",
-  "description": "Anonymize PII in documents. GLiNER zero-shot NER model bundled (665 MB) — no runtime download, offline-ready after install. Pure Node.js, no Python dependency.",
-  "long_description": "MCP server that anonymizes documents before Claude sees them and restores real data after analysis. PII never enters the API — only file paths and session IDs are exchanged. Uses GLiNER zero-shot NER via ONNX Runtime for high-quality entity recognition in legal documents, with Human-in-the-Loop review via an in-chat MCP Apps panel (no browser required). Supports PDF, DOCX (with tracked changes / redline), and plain text. Includes 17 EU pattern recognizers, entity deduplication, chunked processing for large documents, and full local audit logging. The 665 MB GLiNER ONNX model is BUNDLED inside the extension — zero runtime download, fully offline after install. First-run only needs to install native npm deps (onnxruntime-node + transformers, ~1–2 min). Pure Node.js, no Python dependency.",
+  "description": "Anonymize PII in documents. Requires one-time model install via PowerShell/bash one-liner — see README for 3-step setup. Pure Node.js, no Python dependency.",
+  "long_description": "MCP server that anonymizes documents before Claude sees them and restores real data after analysis. PII never enters the API — only file paths and session IDs are exchanged. Uses GLiNER zero-shot NER via ONNX Runtime for high-quality entity recognition in legal documents, with Human-in-the-Loop review via an in-chat MCP Apps panel (no browser required). Supports PDF, DOCX (with tracked changes / redline), and plain text. Includes 17 EU pattern recognizers, entity deduplication, chunked processing for large documents, and full local audit logging. The GLiNER model (~634 MB) is installed separately via `install-model.ps1` (Windows) or `install-model.sh` (macOS/Linux) — one command, ~2-5 min. This keeps the plugin tiny (<2 MB, instant install in Claude Desktop) and decouples model updates from code. First-run also installs native npm deps (onnxruntime-node + transformers, ~1–2 min). Pure Node.js, no Python dependency.",
   "author": {
     "name": "Grigorii Moskalev",
     "url": "https://www.linkedin.com/in/grigorii-moskalev/"
@@ -21,7 +21,8 @@
         "PII_MIN_SCORE": "${user_config.pii_min_score}",
         "PII_NER_THRESHOLD": "${user_config.ner_threshold}",
         "PII_WORK_DIR": "${user_config.work_dir}",
-        "PII_SKIP_REVIEW": "${user_config.skip_review}"
+        "PII_SKIP_REVIEW": "${user_config.skip_review}",
+        "PII_SHIELD_MODELS_DIR": "${user_config.models_path}"
       },
       "platform_overrides": {
         "darwin": {
@@ -80,6 +81,13 @@
       "title": "Skip HITL review",
       "description": "Set to 'true' to skip the human review step after anonymization.",
       "default": "false",
+      "required": false
+    },
+    "models_path": {
+      "type": "directory",
+      "title": "GLiNER model directory (optional)",
+      "description": "Folder containing gliner-pii-base-v1.0/ (the model + 4 tokenizer files). Leave empty to auto-detect in ~/.pii_shield/models/ (the default location used by install-model.ps1 / install-model.sh).",
+      "default": "",
       "required": false
     }
   },

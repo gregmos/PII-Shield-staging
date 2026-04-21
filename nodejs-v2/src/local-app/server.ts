@@ -31,7 +31,7 @@ import { filterJurisdictionEntities, filterCurrencyEntities, filterFalsePositive
 import {
   newSessionId, saveMapping, loadMapping, latestSessionId,
 } from "../mapping/mapping-store.js";
-import { saveReview, getReview } from "../mapping/review-store.js";
+import { appendDocReview, getReview } from "../mapping/review-store.js";
 import { logServer } from "../audit/audit-logger.js";
 import { ENV, CHUNK, PATHS } from "../utils/config.js";
 import {
@@ -346,14 +346,18 @@ async function handleAnonymize(body: string, res: http.ServerResponse): Promise<
     const result = await localAnonymize(text, prefix || "", activeBatch.state);
     const sessionId = newSessionId();
     saveMapping(sessionId, activeBatch.state.mapping);
-    saveReview(sessionId, {
-      session_id: sessionId,
+    appendDocReview(sessionId, {
+      doc_id: `local-${Date.now().toString(36)}`,
+      source_filename: "text-input",
+      source_file_path: "",
       entities: result.entities,
       original_text: text,
       anonymized_text: result.anonymized,
       overrides: { remove: [], add: [] },
       approved: false,
-      timestamp: Date.now(),
+      output_dir: "",
+      output_path_original: "",
+      added_at: Date.now(),
     });
 
     activeBatch.documents.push({
@@ -479,14 +483,18 @@ async function handleUpload(body: string, res: http.ServerResponse): Promise<voi
     const result = await localAnonymize(text, prefix || "", activeBatch.state);
     const sessionId = newSessionId();
     saveMapping(sessionId, activeBatch.state.mapping);
-    saveReview(sessionId, {
-      session_id: sessionId,
+    appendDocReview(sessionId, {
+      doc_id: `local-${Date.now().toString(36)}`,
+      source_filename: filename,
+      source_file_path: "",
       entities: result.entities,
       original_text: text,
       anonymized_text: result.anonymized,
       overrides: { remove: [], add: [] },
       approved: false,
-      timestamp: Date.now(),
+      output_dir: "",
+      output_path_original: "",
+      added_at: Date.now(),
     });
 
     activeBatch.documents.push({
@@ -604,11 +612,12 @@ function handleSessions(res: http.ServerResponse): void {
         const stat = fs.statSync(filePath);
         const sid = f.replace(".json", "");
         const review = getReview(sid);
+        const firstDoc = review?.documents?.[0];
         sessions.push({
           session_id: sid,
           timestamp: stat.mtimeMs,
-          entity_count: review?.entities?.length || 0,
-          source_filename: (review as any)?.source_filename,
+          entity_count: firstDoc?.entities?.length || 0,
+          source_filename: firstDoc?.source_filename,
         });
       } catch { /* skip */ }
     }
@@ -624,14 +633,16 @@ function handleSessionDetail(sessionId: string, res: http.ServerResponse): void 
     sendError(res, `Session '${sessionId}' not found`, 404);
     return;
   }
+  const firstDoc = review?.documents?.[0];
   sendJson(res, {
     session_id: sessionId,
-    entities: review?.entities || [],
-    original_text: review?.original_text || "",
-    anonymized_text: review?.anonymized_text || "",
+    entities: firstDoc?.entities || [],
+    original_text: firstDoc?.original_text || "",
+    anonymized_text: firstDoc?.anonymized_text || "",
     mapping,
-    approved: review?.approved || false,
+    approved: firstDoc?.approved || false,
     timestamp: review?.timestamp || 0,
+    documents: review?.documents || [],
   });
 }
 

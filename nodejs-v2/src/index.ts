@@ -24,12 +24,25 @@ import { z } from "zod";
 import { VERSION, PATHS, getDataDirSource } from "./utils/config.js";
 import { PIIEngine } from "./engine/pii-engine.js";
 import { SUPPORTED_ENTITIES } from "./engine/entity-types.js";
-import { getNerDiagnostic, getNerError, getNerStats, getNerStatus } from "./engine/ner-backend.js";
+import { getNerDiagnostic, getNerError, getNerStats, getNerStatus, getNeedsSetupSearched, forceReinitNer, nerLog } from "./engine/ner-backend.js";
 import {
   saveMapping, loadMapping, getMappingSafe, newSessionId,
   latestSessionId, cleanupOldMappings,
+  loadSessionState, saveSessionState, sessionExists,
+  type MappingDocumentEntry,
 } from "./mapping/mapping-store.js";
-import { getReview, saveReview } from "./mapping/review-store.js";
+import {
+  getReview,
+  saveReview,
+  appendDocReview,
+  findDocReview,
+  findDocReviewByPath,
+  updateDocReview,
+  type PerDocReview,
+  type ReviewOverrides,
+} from "./mapping/review-store.js";
+import { sha256File, formatSha256 } from "./utils/hashing.js";
+import crypto from "node:crypto";
 import { logToolCall, logToolResponse, logToolError, logServer } from "./audit/audit-logger.js";
 import {
   registerSidecarTool,
@@ -54,7 +67,12 @@ import { resolveInputPath } from "./path-resolution/auto-resolve.js";
 import { anonymizeDocx, anonymizeDocxWithMapping } from "./docx/docx-anonymizer.js";
 import { deanonymizeDocx } from "./docx/docx-deanonymizer.js";
 import { applyTrackedChanges } from "./docx/docx-redliner.js";
-import { assignPlaceholders, deduplicateOverlaps } from "./engine/entity-dedup.js";
+import { writePiiShieldProps, readPiiShieldProps } from "./docx/docx-custom-props.js";
+import {
+  exportSessionToFile,
+  importSessionFromFile,
+} from "./portability/session-archive.js";
+import { assignPlaceholders, deduplicateOverlaps, createPlaceholderState, type PlaceholderState } from "./engine/entity-dedup.js";
 import type { DetectedEntity } from "./engine/pattern-recognizers.js";
 import { logNer } from "./audit/audit-logger.js";
 
@@ -154,11 +172,31 @@ async function reanonymizeWithReview(
   prefix: string,
 ): Promise<string> {
   const review = getReview(reviewSessionId);
-  if (!review) {
+  if (!review || review.documents.length === 0) {
     return JSON.stringify({
       status: "error",
       error: `No review session found: ${reviewSessionId}`,
       hint: "The review may have expired, or `start_review` was never called for this session.",
+    }, null, 2);
+  }
+
+  // v2.1.3: a session may hold multiple PerDocReview entries. Locate the one
+  // that matches the incoming file by source_file_path. Fall back to
+  // documents[0] if only one doc exists (legacy single-doc sessions where
+  // path normalization might disagree).
+  let target = findDocReviewByPath(reviewSessionId, resolvedPath);
+  if (!target && review.documents.length === 1) target = review.documents[0];
+  if (!target) {
+    return JSON.stringify({
+      status: "error",
+      error:
+        `Review session ${reviewSessionId} has ${review.documents.length} ` +
+        `documents, none match the input path ${resolvedPath}.`,
+      available_docs: review.documents.map((d) => ({
+        doc_id: d.doc_id,
+        source_file_path: d.source_file_path,
+      })),
+      hint: "Re-run anonymize_file with the exact path that was originally anonymized under this session.",
     }, null, 2);
   }
 
@@ -167,18 +205,19 @@ async function reanonymizeWithReview(
   // regardless of whether the user has clicked Approve yet. We classify the
   // current review state into one of three actionable statuses so the skill
   // doesn't have to inspect the transcript (which is unreliable across hosts).
-  if (!review.approved) {
+  if (!target.approved) {
     return JSON.stringify({
       status: "waiting_for_approval",
       session_id: reviewSessionId,
+      doc_id: target.doc_id,
       note:
         "The review panel has not been approved yet. Ask the user to click " +
         "Approve in the panel, then call this tool again.",
     }, null, 2);
   }
 
-  const overrides = review.overrides || { remove: [], add: [] };
-  const baseEntities = review.entities || [];
+  const overrides = target.overrides || { remove: [], add: [] };
+  const baseEntities = target.entities || [];
   const removeCount = (overrides.remove || []).length;
   const addCount = (overrides.add || []).length;
 
@@ -186,14 +225,15 @@ async function reanonymizeWithReview(
   // Return the ORIGINAL paths from the first anonymize_file call so the
   // skill can proceed immediately without re-running the NER pipeline.
   if (removeCount === 0 && addCount === 0) {
-    const origText = review.output_path_original;
-    const origDocx = review.docx_output_path_original;
+    const origText = target.output_path_original;
+    const origDocx = target.docx_output_path_original;
     const inputDir = path.dirname(resolvedPath);
     const ext = path.extname(resolvedPath).toLowerCase();
-    logNer(`[HITL] approved-no-changes for review ${reviewSessionId} — returning original paths`);
+    logNer(`[HITL] approved-no-changes for review ${reviewSessionId}/${target.doc_id} — returning original paths`);
     const resp: Record<string, unknown> = {
       status: "approved_no_changes",
       session_id: reviewSessionId,
+      doc_id: target.doc_id,
       note:
         "User approved without edits. Use the original output paths unchanged. " +
         "No re-anonymization needed.",
@@ -209,17 +249,15 @@ async function reanonymizeWithReview(
     return JSON.stringify(resp, null, 2);
   }
 
-  logNer(`[HITL] applying ${addCount} adds, ${removeCount} removes for review ${reviewSessionId} (base entities: ${baseEntities.length})`);
+  logNer(`[HITL] applying ${addCount} adds, ${removeCount} removes for review ${reviewSessionId}/${target.doc_id} (base entities: ${baseEntities.length})`);
 
   const ext = path.extname(resolvedPath).toLowerCase();
 
-  // Build corrected entities from the original text. For .docx we use
-  // review.original_text which was the flattened text snapshot at
-  // anonymization time (already stored by anonymizeDocx). Same for text files.
-  const originalText = review.original_text || "";
+  // Build corrected entities from the doc's original text snapshot.
+  const originalText = target.original_text || "";
   if (!originalText) {
     return JSON.stringify({
-      error: `Review ${reviewSessionId} has no original_text snapshot — cannot re-anonymize.`,
+      error: `Review ${reviewSessionId}/${target.doc_id} has no original_text snapshot — cannot re-anonymize.`,
     }, null, 2);
   }
 
@@ -228,10 +266,15 @@ async function reanonymizeWithReview(
 
   // Persist the new mapping under the SAME session_id so subsequent
   // deanonymize_text / deanonymize_docx calls keep working transparently.
+  // NOTE: for multi-doc sessions this OVERWRITES the shared mapping with
+  // just this doc's placeholders. That's intentional for the single-doc
+  // HITL flow; multi-doc HITL + reanonymize-all is a later improvement.
   saveMapping(reviewSessionId, mapping, { source: resolvedPath });
 
-  // Update the review record so future status checks see the new state.
-  review.entities = placed.map((e) => ({
+  // Update the target doc's entities snapshot so future status checks see
+  // the new state. `target` is a reference into review.documents[], so
+  // mutation + saveReview persists the whole session.
+  target.entities = placed.map((e) => ({
     text: e.text, type: e.type, start: e.start, end: e.end,
     score: e.score, placeholder: e.placeholder || "",
   }));
@@ -241,7 +284,7 @@ async function reanonymizeWithReview(
     // Write the corrected .docx via the existing mapping-applier so formatting
     // is preserved. Use a NEW filename so Claude is forced to read the
     // corrected version (and so a stale path can never sneak through).
-    const outDir = (review as any).output_dir || path.dirname(resolvedPath);
+    const outDir = target.output_dir || path.dirname(resolvedPath);
     fs.mkdirSync(outDir, { recursive: true });
     const stem = path.basename(resolvedPath, ext);
     const correctedPath = path.join(outDir, `${stem}_anonymized_corrected.docx`);
@@ -270,8 +313,20 @@ async function reanonymizeWithReview(
     const correctedTextPath = path.join(outDir, `${stem}_anonymized_corrected.txt`);
     fs.writeFileSync(correctedTextPath, correctedText, "utf-8");
     // Refresh anonymized_text snapshot so future reviews see the corrected state.
-    review.anonymized_text = correctedText;
+    target.anonymized_text = correctedText;
     saveReview(reviewSessionId, review);
+
+    // Embed session_id in the corrected .docx so cross-session deanonymize
+    // works on the HITL-corrected output too (not just the initial one).
+    try {
+      await writePiiShieldProps(finalPath, {
+        session_id: reviewSessionId,
+        source_hash: "",
+        anonymized_at: new Date().toISOString(),
+      });
+    } catch (e) {
+      logNer(`[HITL] writePiiShieldProps(${finalPath}) failed (non-fatal): ${e}`);
+    }
 
     logNer(`[HITL] re-anonymized .docx → ${finalPath}`);
     logNer(`[HITL] re-anonymized .txt  → ${correctedTextPath} (${correctedText.length} chars)`);
@@ -279,6 +334,7 @@ async function reanonymizeWithReview(
     return JSON.stringify({
       status: "success",
       session_id: reviewSessionId,
+      doc_id: target.doc_id,
       output_path: correctedTextPath,
       output_rel_path: path.relative(inputDir, correctedTextPath).split(path.sep).join("/"),
       docx_output_path: finalPath,
@@ -297,15 +353,15 @@ async function reanonymizeWithReview(
     result = result.slice(0, e.start) + (e.placeholder || "") + result.slice(e.end);
   }
 
-  const outDir = (review as any).output_dir || path.join(path.dirname(resolvedPath), `pii_shield_${reviewSessionId}`);
+  const outDir = target.output_dir || path.join(path.dirname(resolvedPath), `pii_shield_${reviewSessionId}`);
   fs.mkdirSync(outDir, { recursive: true });
   const stem = path.basename(resolvedPath, ext);
   const outExt = ext === ".pdf" ? ".txt" : ext;
   const outPath = path.join(outDir, `${stem}_anonymized_corrected${outExt}`);
   fs.writeFileSync(outPath, result, "utf-8");
 
-  // Refresh anonymized_text snapshot for any subsequent review.
-  review.anonymized_text = result;
+  // Refresh anonymized_text snapshot on the target doc for any subsequent review.
+  target.anonymized_text = result;
   saveReview(reviewSessionId, review);
 
   logNer(`[HITL] re-anonymized text → ${outPath}`);
@@ -313,6 +369,7 @@ async function reanonymizeWithReview(
   return JSON.stringify({
     status: "success",
     session_id: reviewSessionId,
+    doc_id: target.doc_id,
     output_path: outPath,
     output_rel_path: path.relative(inputDirText, outPath).split(path.sep).join("/"),
     output_dir: outDir,
@@ -336,14 +393,20 @@ async function handleAnonymizeText(args: ToolArgs): Promise<string> {
   const result = await engine.anonymizeText(text, language, prefix);
   const sessionId = newSessionId();
   saveMapping(sessionId, result.mapping);
-  saveReview(sessionId, {
-    session_id: sessionId,
+  // v2.1.3: wrap inline text as a single PerDocReview so start_review
+  // renders the tab identically to a file-based anonymize.
+  appendDocReview(sessionId, {
+    doc_id: `inline-${Date.now().toString(36)}`,
+    source_filename: "inline_text",
+    source_file_path: "",
     entities: result.entities,
     original_text: text,
     anonymized_text: result.anonymized,
     overrides: { remove: [], add: [] },
     approved: false,
-    timestamp: Date.now(),
+    output_dir: "",
+    output_path_original: "",
+    added_at: Date.now(),
   });
   const resp: Record<string, unknown> = {
     status: "success",
@@ -414,12 +477,93 @@ async function handleGetMapping(args: ToolArgs): Promise<string> {
   }, null, 2);
 }
 
+// ── install-model script URLs (published to main branch + release asset) ─────
+//
+// The one-liner URL pulls from `main` so script updates can ship without
+// cutting a new tag. The release asset URL points at the tagged v2.0.0
+// download (user's preferred "readable file" path).
+//
+// When versioning moves past v2.0.0, update `RELEASE_SCRIPT_BASE` — the raw
+// content URL is intentionally unpinned.
+const INSTALL_SCRIPT_RAW_BASE =
+  "https://raw.githubusercontent.com/grigorii-moskalev/pii-shield/main/nodejs-v2/scripts";
+const RELEASE_SCRIPT_BASE =
+  `https://github.com/grigorii-moskalev/pii-shield/releases/download/v${VERSION}`;
+const MODEL_EXPECTED_PATH = "~/.pii_shield/models/gliner-pii-base-v1.0/";
+
+function renderNeedsSetupEnvelope(): string {
+  const oneLinerWindows =
+    `iwr ${INSTALL_SCRIPT_RAW_BASE}/install-model.ps1 | iex`;
+  const oneLinerUnix =
+    `curl -fsSL ${INSTALL_SCRIPT_RAW_BASE}/install-model.sh | bash`;
+  return JSON.stringify({
+    status: "loading",
+    phase: "needs_setup",
+    ner_ready: false,
+    version: VERSION,
+    runtime: "node.js",
+    supported_entities: [...SUPPORTED_ENTITIES],
+    setup_instructions: {
+      one_liner_windows: oneLinerWindows,
+      one_liner_mac_linux: oneLinerUnix,
+      script_urls: {
+        windows: `${RELEASE_SCRIPT_BASE}/install-model.ps1`,
+        mac_linux: `${RELEASE_SCRIPT_BASE}/install-model.sh`,
+      },
+      expected_path: MODEL_EXPECTED_PATH,
+      model_size_mb: 634,
+      searched_paths: getNeedsSetupSearched(),
+    },
+    user_message:
+      "PII Shield needs its GLiNER model (one-time, ~634 MB). Run ONE of these in your terminal:\n\n" +
+      `  Windows (PowerShell):  ${oneLinerWindows}\n` +
+      `  macOS / Linux:         ${oneLinerUnix}\n\n` +
+      `The script downloads the model into ${MODEL_EXPECTED_PATH} (~2-5 min). Then ask me again and I'll pick up the model automatically.`,
+    display_instruction:
+      "Print the `user_message` field verbatim to the user. Stop and wait for them to run the one-liner. On the next user message, retry the original request — do not re-poll list_entities until then.",
+  }, null, 2);
+}
+
 async function handleListEntities(_args: ToolArgs): Promise<string> {
   const engine = PIIEngine.getInstance();
   const latest = latestSessionId();
   const stats = getNerStats();
-  const nerStatus = getNerStatus();
+  let nerStatus = getNerStatus();
   const ready = engine.isNerReady && nerStatus.ready;
+
+  // Short-circuit for the `needs_setup` phase — the user must take action
+  // (run install-model one-liner) before NER can become ready. BUT: before
+  // giving up, force a fresh init. `forceReinitNer()` unconditionally clears
+  // `_initFailed` / `_initPromise` / cached `_gliner` and re-runs the
+  // auto-BFS `ensureModelFiles()` scan, so if the user just finished running
+  // install-model this poll will pick up the freshly extracted model without
+  // requiring a server restart.
+  //
+  // v2.1.1 hotfix: previously used `initNer()` which gated on `_initFailed`;
+  // observationally that gate did NOT trigger a new initGliner call (1-ms
+  // response, no `[NER] initGliner starting...` log entry), so the user
+  // stayed stuck in needs_setup despite the model being in place. The
+  // `[retry] ...` nerLog entries below are diagnostic — they give us a
+  // paper trail in `~/.pii_shield/audit/ner_init.log` to confirm this
+  // branch ran and what initGliner decided.
+  if (nerStatus.phase === "needs_setup") {
+    nerLog("[retry] handleListEntities: phase=needs_setup → calling forceReinitNer()");
+    try {
+      await forceReinitNer();
+      nerLog(`[retry] forceReinitNer resolved, new phase=${getNerStatus().phase}`);
+    } catch (e) {
+      // NEEDS_SETUP will re-throw through forceReinitNer → initGliner;
+      // initGliner's catch has already called setNerStatus("needs_setup", …)
+      // and logged `[NER] needs_setup — searched: …` so we don't duplicate.
+      nerLog(`[retry] forceReinitNer threw: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+    }
+    nerStatus = getNerStatus();
+    if (nerStatus.phase === "needs_setup") {
+      return renderNeedsSetupEnvelope();
+    }
+    // Otherwise phase flipped to loading_model / installing_deps / ready —
+    // fall through to the normal polling / readiness logic below.
+  }
 
   if (!ready && nerStatus.phase !== "error") {
     if (
@@ -430,9 +574,13 @@ async function handleListEntities(_args: ToolArgs): Promise<string> {
       // response for 20 s before replying. This turns any Claude polling
       // loop into an honest 20-second interval.
       await new Promise((r) => setTimeout(r, 20000));
+      // Re-read status after the throttle — phase may have advanced to
+      // `ready`, `error`, or `needs_setup` during the wait.
+      nerStatus = getNerStatus();
+      if (nerStatus.phase === "needs_setup") return renderNeedsSetupEnvelope();
     }
     const humanMessage = nerStatus.message ||
-      "PII Shield NER is initializing (first run only). This takes ~1–2 minutes while onnxruntime + transformers install; the GLiNER model is bundled in the extension so no download is needed.";
+      "PII Shield NER is initializing (first run only). This takes ~1–2 minutes while onnxruntime + transformers install. The GLiNER model was already placed in ~/.pii_shield/models/ by the install-model script.";
     const progressPct = typeof nerStatus.progress_pct === "number"
       ? `${nerStatus.progress_pct}%`
       : "…";
@@ -444,9 +592,9 @@ async function handleListEntities(_args: ToolArgs): Promise<string> {
       firstRunNotice =
         "⏳ **First-run setup** — PII Shield is installing runtime dependencies " +
         "(onnxruntime-node, @xenova/transformers, gliner). This takes about 1–2 " +
-        "minutes, once. The GLiNER NER model (~665 MB) is already bundled in the " +
-        "extension — no runtime download needed. " +
-        `Cache location: \`${dataDir}\`. Subsequent runs will be instant.`;
+        "minutes, once. The GLiNER NER model (~634 MB) was pre-installed by the " +
+        "install-model script into ~/.pii_shield/models/ — no download at this stage. " +
+        `Runtime deps cache: \`${dataDir}\`. Subsequent runs will be instant.`;
     }
 
     const envelope: Record<string, unknown> = {
@@ -503,6 +651,7 @@ async function handleAnonymizeFile(args: ToolArgs): Promise<string> {
   const language = (args.language as string) || "en";
   const prefix = (args.prefix as string) || "";
   const reviewSessionId = ((args.review_session_id as string) || "").trim();
+  const sessionIdArg = ((args.session_id as string) || "").trim();
 
   // Resolve file path via auto-resolve (literal → $PII_WORK_DIR → BFS of
   // common user dirs). No marker ceremony needed on the happy path; if the
@@ -524,7 +673,39 @@ async function handleAnonymizeFile(args: ToolArgs): Promise<string> {
     return reanonymizeWithReview(resolvedPath, reviewSessionId, prefix);
   }
 
+  // Multi-file extend branch: if caller passed session_id, validate and
+  // load its state so the pool is shared across this document and prior
+  // ones in the same session.
+  let loadedSession: ReturnType<typeof loadSessionState> = null;
+  if (sessionIdArg) {
+    if (!sessionExists(sessionIdArg)) {
+      return JSON.stringify({
+        status: "error",
+        error: `session_id '${sessionIdArg}' not found`,
+        hint: "Omit session_id to start a new session. See list_entities for recent ones.",
+      }, null, 2);
+    }
+    loadedSession = loadSessionState(sessionIdArg);
+    if (!loadedSession) {
+      return JSON.stringify({
+        status: "error",
+        error: `session_id '${sessionIdArg}' exists but mapping could not be loaded`,
+        hint: "Mapping file may be corrupt. Omit session_id to start a new session.",
+      }, null, 2);
+    }
+    logServer(`[Anonymize] extending session ${sessionIdArg} (${loadedSession.documents.length} docs, pool ${Object.keys(loadedSession.mapping).length})`);
+  }
+
   const ext = path.extname(resolvedPath).toLowerCase();
+  const newDocId = `${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
+  const anonymizedAt = new Date().toISOString();
+  let sourceHash = "";
+  try {
+    sourceHash = formatSha256(await sha256File(resolvedPath));
+  } catch (e) {
+    logServer(`[Anonymize] source hash failed (non-fatal): ${e}`);
+  }
+
   let text: string;
 
   if (ext === ".pdf") {
@@ -541,33 +722,60 @@ async function handleAnonymizeFile(args: ToolArgs): Promise<string> {
       }, null, 2);
     }
   } else if (ext === ".docx") {
-    const docxResult = await anonymizeDocx(resolvedPath, language, prefix);
+    const docxResult = await anonymizeDocx(resolvedPath, language, prefix, {
+      existingSessionId: sessionIdArg || undefined,
+      sharedState: loadedSession?.state,
+      sourceHash,
+      anonymizedAt,
+    });
     const sid = docxResult.session_id as string;
     const outDir = path.dirname(docxResult.output_path as string);
     const inputDir = path.dirname(resolvedPath);
     const textOutPath = docxResult.text_output_path as string;
     const docxOutPath = docxResult.output_path as string;
+    const finalState = docxResult.state;
 
-    saveReview(sid, {
-      session_id: sid,
+    // Persist full state + documents list so future anonymize_file(session_id)
+    // calls can extend this session and deanonymize_docx(path) can look up
+    // the mapping even in a brand-new chat.
+    const docs: MappingDocumentEntry[] = [
+      ...(loadedSession?.documents ?? []),
+      {
+        doc_id: newDocId,
+        source_path: resolvedPath,
+        source_hash: sourceHash,
+        anonymized_at: anonymizedAt,
+      },
+    ];
+    saveSessionState(sid, { state: finalState, documents: docs });
+
+    // v2.1.3: append a per-doc review entry so multi-file sessions
+    // accumulate one PerDocReview per added document instead of the
+    // latest saveReview() overwriting all prior entries.
+    appendDocReview(sid, {
+      doc_id: newDocId,
+      source_filename: path.basename(resolvedPath),
+      source_file_path: resolvedPath,
       entities: (docxResult.entities as any[]) || [],
       original_text: (docxResult.original_text as string) || "",
       anonymized_text: (docxResult.anonymized_text as string) || "",
       html_text: (docxResult.html_text as string) || "",
       overrides: { remove: [], add: [] },
       approved: false,
-      timestamp: Date.now(),
       output_dir: outDir,
       output_path_original: textOutPath,
       docx_output_path_original: docxOutPath,
-      source_file_path: resolvedPath,
+      added_at: Date.now(),
     });
 
     return JSON.stringify({
       status: "success",
       session_id: sid,
+      doc_id: newDocId,
       entity_count: docxResult.total_entities,
       unique_entities: docxResult.unique_entities,
+      pool_size: Object.keys(finalState.mapping).length,
+      documents_in_session: docs.length,
       output_path: textOutPath,
       output_rel_path: path.relative(inputDir, textOutPath).split(path.sep).join("/"),
       docx_output_path: docxOutPath,
@@ -575,7 +783,10 @@ async function handleAnonymizeFile(args: ToolArgs): Promise<string> {
       output_dir: outDir,
       by_type: docxResult.by_type,
       processing_time_ms: docxResult.processing_time_ms,
-      note: "Read output_path (.txt) for analysis. docx_output_path is the formatted version for later tracked-changes or deanonymization. Use output_rel_path / docx_output_rel_path (relative to the input file's directory) if the absolute host path isn't reachable from your environment (e.g. Cowork VM where only the shared mount is visible).",
+      source_hash: sourceHash,
+      note: loadedSession
+        ? `Document added to existing session ${sid}. Pool extended with this doc's new entities; identical entities across this and prior docs share placeholders. Read output_path (.txt) for analysis.`
+        : "Read output_path (.txt) for analysis. docx_output_path is the formatted version for later tracked-changes or deanonymization. Use output_rel_path / docx_output_rel_path (relative to the input file's directory) if the absolute host path isn't reachable from your environment (e.g. Cowork VM where only the shared mount is visible).",
     }, null, 2);
   } else if ([".txt", ".md", ".csv", ".log", ".text"].includes(ext)) {
     text = fs.readFileSync(resolvedPath, "utf-8");
@@ -587,6 +798,13 @@ async function handleAnonymizeFile(args: ToolArgs): Promise<string> {
 
   // Chunked processing for long documents
   if (text.length > CHUNK.THRESHOLD) {
+    if (sessionIdArg) {
+      return JSON.stringify({
+        status: "error",
+        error: "session_id is not supported with chunked processing in this version",
+        hint: `Document is ${text.length} chars (>${CHUNK.THRESHOLD} chars threshold). For multi-file session extension, anonymize each file in standard mode (smaller docs) and keep passing the same session_id. Anonymize this large file standalone by omitting session_id.`,
+      }, null, 2);
+    }
     const chunkSize = 5000;
     logServer(`[Anonymize] Text ${text.length} chars > threshold ${CHUNK.THRESHOLD}, entering chunked mode (chunk_size=${chunkSize})`);
 
@@ -615,11 +833,24 @@ async function handleAnonymizeFile(args: ToolArgs): Promise<string> {
     }, null, 2);
   }
 
-  // Standard (non-chunked) processing
-  logServer(`[Anonymize] Standard mode: ${text.length} chars, running NER...`);
-  const result = await engine.anonymizeText(text, language, prefix);
-  const sessionId = newSessionId();
-  saveMapping(sessionId, result.mapping);
+  // Standard (non-chunked) processing.
+  // Always pass a PlaceholderState so we can persist it after — for fresh
+  // sessions we create one here; for extends we reuse the loaded one.
+  const state: PlaceholderState = loadedSession?.state ?? createPlaceholderState();
+  logServer(`[Anonymize] Standard mode: ${text.length} chars, running NER... (session=${sessionIdArg || "new"})`);
+  const result = await engine.anonymizeText(text, language, prefix, state);
+  const sessionId = sessionIdArg || newSessionId();
+
+  const docs: MappingDocumentEntry[] = [
+    ...(loadedSession?.documents ?? []),
+    {
+      doc_id: newDocId,
+      source_path: resolvedPath,
+      source_hash: sourceHash,
+      anonymized_at: anonymizedAt,
+    },
+  ];
+  saveSessionState(sessionId, { state, documents: docs });
 
   const outDir = path.join(path.dirname(resolvedPath), `pii_shield_${sessionId}`);
   fs.mkdirSync(outDir, { recursive: true });
@@ -627,27 +858,35 @@ async function handleAnonymizeFile(args: ToolArgs): Promise<string> {
   fs.writeFileSync(outPath, result.anonymized, "utf-8");
 
   const inputDir = path.dirname(resolvedPath);
-  saveReview(sessionId, {
-    session_id: sessionId,
+  // v2.1.3: append per-doc review entry for multi-file session support.
+  appendDocReview(sessionId, {
+    doc_id: newDocId,
+    source_filename: path.basename(resolvedPath),
+    source_file_path: resolvedPath,
     entities: result.entities,
     original_text: text,
     anonymized_text: result.anonymized,
     overrides: { remove: [], add: [] },
     approved: false,
-    timestamp: Date.now(),
     output_dir: outDir,
     output_path_original: outPath,
-    source_file_path: resolvedPath,
+    added_at: Date.now(),
   });
 
   const resp: Record<string, unknown> = {
     status: "success",
     session_id: sessionId,
+    doc_id: newDocId,
     entity_count: result.entityCount,
+    pool_size: Object.keys(state.mapping).length,
+    documents_in_session: docs.length,
     output_path: outPath,
     output_rel_path: path.relative(inputDir, outPath).split(path.sep).join("/"),
     output_dir: outDir,
-    note: "Anonymized text written to output_path. Read the file to get the content. Use output_rel_path (relative to the input file's directory) if the absolute host path isn't reachable from your environment.",
+    source_hash: sourceHash,
+    note: loadedSession
+      ? `Document added to existing session ${sessionId}. Pool extended.`
+      : "Anonymized text written to output_path. Read the file to get the content. Use output_rel_path (relative to the input file's directory) if the absolute host path isn't reachable from your environment.",
   };
   if (!result.nerUsed) {
     resp.warning = "NER model is still loading (first run downloads ~665 MB). Only pattern-based detection was used. Names, organizations, and locations may be missed. Call list_entities to see progress; re-run once `ner_ready: true` for full coverage.";
@@ -703,21 +942,25 @@ async function handleGetFullAnonymizedText(args: ToolArgs): Promise<string> {
     const outPath = path.join(outDir, `${path.basename(result.sourcePath, ext)}_anonymized${ext === ".pdf" ? ".txt" : ext}`);
     fs.writeFileSync(outPath, result.anonymizedText, "utf-8");
 
-    const reviewData = {
-      session_id: mappingSessionId,
+    // v2.1.3: chunked finalize emits a single PerDocReview under both the
+    // canonical mappingSessionId and the legacy chunk session_id (so older
+    // start_review(session_id=<chunk>) calls still find the data).
+    const docReview: PerDocReview = {
+      doc_id: `chunk-${Date.now().toString(36)}`,
+      source_filename: path.basename(result.sourcePath),
+      source_file_path: result.sourcePath,
       entities: result.entities,
       original_text: result.originalText,
       anonymized_text: result.anonymizedText,
       overrides: { remove: [], add: [] },
       approved: false,
-      timestamp: Date.now(),
       output_dir: outDir,
       output_path_original: outPath,
-      source_file_path: result.sourcePath,
+      added_at: Date.now(),
     };
-    saveReview(mappingSessionId, reviewData);
+    appendDocReview(mappingSessionId, docReview);
     saveMapping(sessionId, result.mapping);
-    saveReview(sessionId, { ...reviewData, session_id: sessionId });
+    appendDocReview(sessionId, docReview);
 
     logServer(`[Chunked] Finalized ${sessionId} → ${mappingSessionId}: ${result.entityCount} entities, output=${outPath}`);
 
@@ -805,18 +1048,21 @@ async function handleAnonymizeDocx(args: ToolArgs): Promise<string> {
   const inputDir = path.dirname(resolved);
   const docxOutPath = result.output_path as string;
   const textOutPath = result.text_output_path as string | undefined;
-  saveReview(docxSid, {
-    session_id: docxSid,
+  // v2.1.3: deprecated anonymize_docx tool — emit PerDocReview shape.
+  appendDocReview(docxSid, {
+    doc_id: `docx-${Date.now().toString(36)}`,
+    source_filename: path.basename(resolved),
+    source_file_path: resolved,
     entities: (result.entities as any[]) || [],
     original_text: (result.original_text as string) || "",
+    anonymized_text: (result.anonymized_text as string) || "",
     html_text: (result.html_text as string) || "",
     overrides: { remove: [], add: [] },
     approved: false,
-    timestamp: Date.now(),
     output_dir: docxOutDir,
-    output_path_original: textOutPath,
+    output_path_original: textOutPath || "",
     docx_output_path_original: docxOutPath,
-    source_file_path: resolved,
+    added_at: Date.now(),
   });
   // Augment the raw result with relative paths so in-VM callers can read
   // without host↔VM string-replace.
@@ -832,14 +1078,9 @@ async function handleAnonymizeDocx(args: ToolArgs): Promise<string> {
 
 async function handleDeanonymizeDocx(args: ToolArgs): Promise<string> {
   const filePath = (args.file_path as string) || "";
-  const sessionId = ((args.session_id as string) || "").trim() || latestSessionId();
-  if (!sessionId) {
-    return JSON.stringify({ error: "No session. Run anonymize first." });
-  }
-  const mapping = loadMapping(sessionId);
-  if (!mapping) {
-    return JSON.stringify({ error: `Mapping not found: ${sessionId}` });
-  }
+  const explicitSid = ((args.session_id as string) || "").trim();
+
+  // Resolve path FIRST so we can read custom.xml if needed.
   const resolution = resolveInputPath(filePath);
   if (!resolution.ok) {
     return JSON.stringify({
@@ -850,14 +1091,140 @@ async function handleDeanonymizeDocx(args: ToolArgs): Promise<string> {
     }, null, 2);
   }
   const resolved = resolution.path;
-  const restoredPath = await deanonymizeDocx(resolved, mapping);
   const inputDir = path.dirname(resolved);
+
+  // Session resolution priority:
+  // 1. Explicit session_id argument (wins)
+  // 2. pii_shield.session_id embedded in docProps/custom.xml of the input
+  //    .docx — lets Claude deanonymize across chats without needing to
+  //    remember the session_id
+  // 3. latestSessionId() — legacy fallback for files without custom.xml
+  let sessionId = explicitSid;
+  let sessionSource: "explicit" | "custom_xml" | "latest" | "none" =
+    explicitSid ? "explicit" : "none";
+  let embeddedProps: Awaited<ReturnType<typeof readPiiShieldProps>> = null;
+  if (!sessionId && resolved.toLowerCase().endsWith(".docx")) {
+    try {
+      embeddedProps = await readPiiShieldProps(resolved);
+      if (embeddedProps?.session_id) {
+        sessionId = embeddedProps.session_id;
+        sessionSource = "custom_xml";
+      }
+    } catch (e) {
+      logServer(`[Deanonymize] readPiiShieldProps(${resolved}) failed (non-fatal): ${e}`);
+    }
+  }
+  if (!sessionId) {
+    const latest = latestSessionId();
+    if (latest) { sessionId = latest; sessionSource = "latest"; }
+  }
+
+  if (!sessionId) {
+    return JSON.stringify({
+      status: "error",
+      error: "No session_id available",
+      hint: "Pass session_id explicitly, or supply a .docx file anonymized by PII Shield v2.1+ (session_id is embedded in docProps/custom.xml).",
+    }, null, 2);
+  }
+  const mapping = loadMapping(sessionId);
+  if (!mapping || Object.keys(mapping).length === 0) {
+    return JSON.stringify({
+      status: "error",
+      error: `Mapping not found for session '${sessionId}'`,
+      session_id_source: sessionSource,
+      hint: sessionSource === "custom_xml"
+        ? "The .docx carries this session_id in its metadata, but the mapping file is missing (could have been cleaned up by TTL, or the file was anonymized on a different machine). If the mapping lives elsewhere, import it via import_session."
+        : "Run anonymize first, or pass a different session_id.",
+    }, null, 2);
+  }
+  const restoredPath = await deanonymizeDocx(resolved, mapping);
   return JSON.stringify({
     restored_path: restoredPath,
     restored_rel_path: path.relative(inputDir, restoredPath).split(path.sep).join("/"),
     session_id: sessionId,
-    note: "Restored file written to restored_path. Use restored_rel_path (relative to the input file's directory) if the absolute host path isn't reachable from your environment.",
+    session_id_source: sessionSource,
+    embedded_source_hash: embeddedProps?.source_hash || undefined,
+    note:
+      sessionSource === "custom_xml"
+        ? "Session_id resolved from docProps/custom.xml of the input file. Restored file written to restored_path (do NOT read it — contains PII)."
+        : "Restored file written to restored_path. Use restored_rel_path (relative to the input file's directory) if the absolute host path isn't reachable from your environment.",
   }, null, 2);
+}
+
+async function handleExportSession(args: ToolArgs): Promise<string> {
+  const sessionId = ((args.session_id as string) || "").trim();
+  const passphrase = (args.passphrase as string) || "";
+  const outputPath = ((args.output_path as string) || "").trim();
+  if (!sessionId) {
+    return JSON.stringify({ status: "error", error: "session_id is required" }, null, 2);
+  }
+  if (!passphrase) {
+    return JSON.stringify({ status: "error", error: "passphrase is required" }, null, 2);
+  }
+  if (!outputPath) {
+    return JSON.stringify({ status: "error", error: "output_path is required" }, null, 2);
+  }
+  // Ensure parent dir exists.
+  try {
+    fs.mkdirSync(path.dirname(path.resolve(outputPath)), { recursive: true });
+  } catch { /* ignore — exportSessionToFile will surface the error */ }
+  try {
+    const result = await exportSessionToFile(sessionId, passphrase, outputPath);
+    return JSON.stringify({
+      status: "success",
+      archive_path: result.archive_path,
+      archive_size_bytes: result.archive_size_bytes,
+      note: "Session archive is encrypted with AES-256-GCM + scrypt KDF. Share the file and passphrase out of band (different channels). Receiver calls import_session to load it.",
+    }, null, 2);
+  } catch (e: any) {
+    return JSON.stringify({
+      status: "error",
+      error: e?.message || String(e),
+    }, null, 2);
+  }
+}
+
+async function handleImportSession(args: ToolArgs): Promise<string> {
+  const archivePath = ((args.archive_path as string) || "").trim();
+  const passphrase = (args.passphrase as string) || "";
+  const overwrite = !!args.overwrite;
+  if (!archivePath) {
+    return JSON.stringify({ status: "error", error: "archive_path is required" }, null, 2);
+  }
+  if (!passphrase) {
+    return JSON.stringify({ status: "error", error: "passphrase is required" }, null, 2);
+  }
+  const resolution = resolveInputPath(archivePath);
+  const resolved = resolution.ok ? resolution.path : archivePath;
+  if (!fs.existsSync(resolved)) {
+    return JSON.stringify({
+      status: "error",
+      error: `archive file not found: ${archivePath}`,
+      hint: "Pass a full path or a filename reachable via BFS (Downloads/Documents/Desktop/PII_WORK_DIR).",
+    }, null, 2);
+  }
+  try {
+    const result = await importSessionFromFile(resolved, passphrase, { overwrite });
+    return JSON.stringify({
+      status: "success",
+      session_id: result.session_id,
+      overwritten: result.overwritten,
+      document_count: result.document_count,
+      had_review: result.had_review,
+      imported_at: result.imported_at,
+      note: "Session mapping is now local. Use deanonymize_docx(path) or deanonymize_text(text, session_id) to restore PII in an anonymized file.",
+    }, null, 2);
+  } catch (e: any) {
+    return JSON.stringify({
+      status: "error",
+      error: e?.message || String(e),
+      hint: /wrong passphrase/i.test(String(e?.message))
+        ? "Double-check the passphrase. Archives are AES-GCM-authenticated — a single wrong character fails the decrypt."
+        : /already exists/i.test(String(e?.message))
+          ? "Pass overwrite: true to replace the existing mapping."
+          : undefined,
+    }, null, 2);
+  }
 }
 
 async function handleCleanupCache(args: ToolArgs): Promise<string> {
@@ -915,25 +1282,47 @@ async function handleApplyReviewOverrides(args: ToolArgs): Promise<string> {
   if (!sessionId) {
     return JSON.stringify({ error: "session_id is required" }, null, 2);
   }
+  // v2.1.3: optional doc_id routes overrides to a specific PerDocReview
+  // inside the session. When omitted (legacy single-doc UI) we apply to
+  // documents[0].
+  const docIdArg = ((args.doc_id as string) || "").trim();
   const overrides = (args.overrides as {
     remove?: number[];
     add?: Array<{ text: string; type: string; start?: number; end?: number }>;
   }) || { remove: [], add: [] };
 
   const review = getReview(sessionId);
-  if (!review) {
+  if (!review || review.documents.length === 0) {
     return JSON.stringify({ error: `No review session: ${sessionId}` }, null, 2);
   }
 
-  // Archive decisions next to the per-session output dir for audit trail.
+  // Locate the target doc.
+  const targetIdx = docIdArg
+    ? review.documents.findIndex((d) => d.doc_id === docIdArg)
+    : 0;
+  if (targetIdx < 0) {
+    return JSON.stringify({
+      error: `doc_id '${docIdArg}' not found in session ${sessionId}`,
+      available_doc_ids: review.documents.map((d) => d.doc_id),
+    }, null, 2);
+  }
+  const target = review.documents[targetIdx];
+
+  // Archive decisions next to the per-doc output dir for audit trail.
   let archived: string | null = null;
   try {
-    const outDir = (review as any).output_dir;
+    const outDir = target.output_dir;
     if (outDir && fs.existsSync(outDir)) {
-      archived = path.join(outDir, `review_${sessionId}_decisions.json`);
+      archived = path.join(outDir, `review_${sessionId}_${target.doc_id}_decisions.json`);
       fs.writeFileSync(
         archived,
-        JSON.stringify({ session_id: sessionId, approved: true, overrides, timestamp: Date.now() }, null, 2),
+        JSON.stringify({
+          session_id: sessionId,
+          doc_id: target.doc_id,
+          approved: true,
+          overrides,
+          timestamp: Date.now(),
+        }, null, 2),
         "utf-8",
       );
     }
@@ -941,12 +1330,12 @@ async function handleApplyReviewOverrides(args: ToolArgs): Promise<string> {
     console.error(`[apply_review_overrides] archive failed: ${e}`);
   }
 
-  // Normalise shape: ReviewData.overrides.add requires concrete start/end
-  // (the anonymizer needs character offsets to locate the span), so any
-  // entry missing them gets filled from the first occurrence of `text` in
-  // the review's original_text. If text is not found, drop the entry rather
-  // than persist an unlocatable span.
-  const originalText = review.original_text || "";
+  // Normalise shape: overrides.add requires concrete start/end (the
+  // anonymizer needs character offsets to locate the span), so any entry
+  // missing them gets filled from the first occurrence of `text` in this
+  // doc's original_text. If text is not found, drop the entry rather than
+  // persist an unlocatable span.
+  const originalText = target.original_text || "";
   const normalisedAdd: Array<{ text: string; type: string; start: number; end: number }> = [];
   for (const a of (overrides.add || [])) {
     let start = typeof a.start === "number" ? a.start : -1;
@@ -960,12 +1349,12 @@ async function handleApplyReviewOverrides(args: ToolArgs): Promise<string> {
     normalisedAdd.push({ text: a.text, type: a.type, start, end });
   }
 
-  const overridesForReview = {
+  const overridesForReview: ReviewOverrides = {
     remove: overrides.remove || [],
     add: normalisedAdd,
   };
-  review.overrides = overridesForReview;
-  review.approved = true;
+  target.overrides = overridesForReview;
+  target.approved = true;
   saveReview(sessionId, review);
 
   const hasChanges = overridesForReview.remove.length > 0 || overridesForReview.add.length > 0;
@@ -973,6 +1362,7 @@ async function handleApplyReviewOverrides(args: ToolArgs): Promise<string> {
   return JSON.stringify({
     status: "applied",
     session_id: sessionId,
+    doc_id: target.doc_id,
     archived_path: archived,
     has_changes: hasChanges,
     remove_count: overridesForReview.remove.length,
@@ -1013,28 +1403,31 @@ async function handleStartReview(args: ToolArgs): Promise<{
   const validSessionIds: string[] = [];
   const skippedSessionIds: string[] = [];
   const reviewPayloads: Array<Record<string, unknown>> = [];
+  // v2.1.3: emit ONE payload per document within each session, not one per
+  // session. Multi-file sessions (one session_id, N docs) now render as N
+  // tabs in the iframe; legacy BULK (N session_ids, 1 doc each) still yields
+  // N tabs. Both paths flow through the same per-doc unpacking below.
   for (const sid of sessionIds) {
     const data = getReview(sid);
-    if (!data) {
+    if (!data || !Array.isArray(data.documents) || data.documents.length === 0) {
       skippedSessionIds.push(sid);
-      logServer(`[Review] Session ${sid} not found, skipping`);
+      logServer(`[Review] Session ${sid} not found (or empty documents[]), skipping`);
       continue;
     }
     validSessionIds.push(sid);
-    reviewPayloads.push({
-      session_id: sid,
-      entities: data.entities || [],
-      original_text: data.original_text || "",
-      anonymized_text: data.anonymized_text || "",
-      html_text: (data as any).html_text || "",
-      overrides: data.overrides || { remove: [], add: [] },
-      approved: !!data.approved,
-      source_filename:
-        (data as any).source_filename
-        || (data as any).original_filename
-        || path.basename((data as any).output_path || "")
-        || sid,
-    });
+    for (const doc of data.documents) {
+      reviewPayloads.push({
+        session_id: sid,
+        doc_id: doc.doc_id,
+        entities: doc.entities || [],
+        original_text: doc.original_text || "",
+        anonymized_text: doc.anonymized_text || "",
+        html_text: doc.html_text || "",
+        overrides: doc.overrides || { remove: [], add: [] },
+        approved: !!doc.approved,
+        source_filename: doc.source_filename || sid,
+      });
+    }
   }
 
   if (validSessionIds.length === 0) {
@@ -1133,11 +1526,15 @@ server.registerTool("anonymize_file", {
   title: "Anonymize file",
   description:
     "Anonymize PII in a file (.pdf, .docx, .txt, .md, .csv). PREFERRED — PII stays on host. " +
-    "Pass review_session_id for HITL re-anonymization (server applies overrides internally).",
+    "Pass `session_id` to ADD this document to an existing session (shared placeholder pool: identical entities across files share placeholders). " +
+    "Pass `review_session_id` for HITL re-anonymization (server applies overrides internally).",
   inputSchema: {
     file_path: z.string().describe("Path to the file to anonymize"),
     language: z.string().default("en").describe("Language code"),
     prefix: z.string().default("").describe("Prefix for placeholders"),
+    session_id: z.string().default("").describe(
+      "Optional — existing session to extend. When provided, this document joins the session's shared pool: identical entities (e.g. 'Acme Corp.' appearing in multiple files) receive the SAME placeholder across all files in the session. Omit to start a fresh session.",
+    ),
     review_session_id: z.string().default("").describe("Session ID from HITL review for re-anonymization"),
   },
 }, wrapPlainTool("anonymize_file", handleAnonymizeFile));
@@ -1229,9 +1626,11 @@ server.registerTool("apply_review_overrides", {
   title: "Apply review overrides",
   description:
     "Apply the user's HITL review decisions (typically called by the in-chat review iframe on Approve). " +
-    "Takes `session_id` and an `overrides` object with `remove` (indices) and `add` (new entities).",
+    "Takes `session_id` and an `overrides` object with `remove` (indices) and `add` (new entities). " +
+    "For multi-document sessions (one session_id with N docs), pass `doc_id` to target a specific document's review — omit for legacy single-doc sessions.",
   inputSchema: {
     session_id: z.string().describe("Review session id"),
+    doc_id: z.string().default("").describe("Optional per-document review id within a multi-file session. Omit for legacy single-doc sessions — applies to the first document."),
     overrides: z.object({
       remove: z.array(z.number()).optional(),
       add: z.array(z.object({
@@ -1264,6 +1663,28 @@ server.registerTool("cleanup_cache", {
     ),
   },
 }, wrapPlainTool("cleanup_cache", handleCleanupCache));
+
+server.registerTool("export_session", {
+  title: "Export session archive",
+  description:
+    "Export a session (mapping + state + documents list + review if any) to an AES-256-GCM + scrypt encrypted `.pii-session` archive. For team handoff: share the archive and passphrase via DIFFERENT out-of-band channels; receiver runs import_session.",
+  inputSchema: {
+    session_id: z.string().describe("Session to export"),
+    passphrase: z.string().describe("Encryption passphrase (min 4 chars). Share out-of-band, never alongside the archive."),
+    output_path: z.string().describe("Absolute path where the .pii-session archive will be written"),
+  },
+}, wrapPlainTool("export_session", handleExportSession));
+
+server.registerTool("import_session", {
+  title: "Import session archive",
+  description:
+    "Decrypt and import a `.pii-session` archive into the local mapping store. After import, `deanonymize_docx`/`deanonymize_text` can restore PII in files anonymized under that session by the exporter.",
+  inputSchema: {
+    archive_path: z.string().describe("Path to the .pii-session archive"),
+    passphrase: z.string().describe("Decryption passphrase provided by the sender"),
+    overwrite: z.boolean().default(false).describe("Replace an existing local session with the same id (default false — errors out if session exists)"),
+  },
+}, wrapPlainTool("import_session", handleImportSession));
 
 // ── start_review — MCP Apps tool (renders iframe in chat) ────────────────────
 

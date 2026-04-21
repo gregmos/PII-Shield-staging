@@ -6,7 +6,7 @@
 import { ENV, CHUNK } from "../utils/config.js";
 import { SUPPORTED_ENTITIES } from "./entity-types.js";
 import { runPatternRecognizers, type DetectedEntity } from "./pattern-recognizers.js";
-import { deduplicateOverlaps, expandOrgBoundaries, trimOrgPrefix, expandLocationBoundaries, mergeAdjacentLocations, expandAddressBlocks, cleanBoundaries, assignPlaceholders, type AnonymizeResult } from "./entity-dedup.js";
+import { deduplicateOverlaps, expandOrgBoundaries, trimOrgPrefix, expandLocationBoundaries, mergeAdjacentLocations, expandAddressBlocks, cleanBoundaries, assignPlaceholders, type AnonymizeResult, type PlaceholderState } from "./entity-dedup.js";
 import { filterJurisdictionEntities, filterCurrencyEntities, filterGarbageNerEntities } from "./false-positive-filter.js";
 import { initNer, isNerReady, runNer, nerLog } from "./ner-backend.js";
 import { logServer } from "../audit/audit-logger.js";
@@ -375,20 +375,31 @@ export class PIIEngine {
 
   /**
    * Detect + assign placeholders. Returns anonymization result with mapping.
+   *
+   * Pass `sharedState` to extend an existing PlaceholderState across calls
+   * (multi-file session). When omitted, a fresh state is used internally.
    */
-  async anonymize(text: string, language = "en", prefix = ""): Promise<AnonymizeResult> {
+  async anonymize(
+    text: string,
+    language = "en",
+    prefix = "",
+    sharedState?: PlaceholderState,
+  ): Promise<AnonymizeResult> {
     const entities = await this.detect(text, language);
-    return assignPlaceholders(entities, prefix);
+    return assignPlaceholders(entities, prefix, sharedState);
   }
 
   /**
    * Apply anonymization to text — replace entity text with placeholders.
    * Returns the anonymized text string.
+   *
+   * Pass `sharedState` for multi-file session extension.
    */
   async anonymizeText(
     text: string,
     language = "en",
     prefix = "",
+    sharedState?: PlaceholderState,
   ): Promise<{
     anonymized: string;
     mapping: Record<string, string>;
@@ -397,7 +408,7 @@ export class PIIEngine {
     entities: Array<{ text: string; type: string; start: number; end: number; score: number; placeholder: string }>;
   }> {
     const nerWasReady = isNerReady();
-    const { entities, mapping } = await this.anonymize(text, language, prefix);
+    const { entities, mapping } = await this.anonymize(text, language, prefix, sharedState);
 
     // Replace from end to start to preserve positions
     let result = text;

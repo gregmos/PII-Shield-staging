@@ -31,11 +31,15 @@ export const VERSION = "2.0.0";
  */
 let _cachedDataDir: string | null = null;
 let _cachedDataDirSource: string | null = null;
+let _cachedMappingsDir: string | null = null;
+let _cachedMappingsDirSource: string | null = null;
 
 /** Reset the memoized data-dir choice (for tests). */
 export function _resetDataDirCache(): void {
   _cachedDataDir = null;
   _cachedDataDirSource = null;
+  _cachedMappingsDir = null;
+  _cachedMappingsDirSource = null;
 }
 
 /** Source-of-truth description for the currently resolved data dir. */
@@ -44,8 +48,28 @@ export function getDataDirSource(): string {
   return _cachedDataDirSource || "unknown";
 }
 
+/** Source-of-truth description for the currently resolved mappings dir. */
+export function getMappingsDirSource(): string {
+  getMappingsDir();
+  return _cachedMappingsDirSource || "unknown";
+}
+
 function ensureDir(dir: string): void {
   try { fs.mkdirSync(dir, { recursive: true }); } catch { /* best effort */ }
+}
+
+/**
+ * Create a directory that should be user-private (mode 0o700 on POSIX).
+ * On Windows chmod is a no-op; the dir is still effectively private because
+ * it lives under the user's home profile.
+ */
+function ensureDirSecure(dir: string): void {
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try { fs.chmodSync(dir, 0o700); } catch { /* no-op on Windows */ }
+  } catch {
+    /* best effort */
+  }
 }
 
 function getDataDir(): string {
@@ -78,6 +102,35 @@ function getDataDir(): string {
   _cachedDataDir = fallback;
   _cachedDataDirSource = "~/.pii_shield fallback";
   return fallback;
+}
+
+/**
+ * Resolve the MAPPINGS directory. Sits next to models / deps / audit under
+ * the same `~/.pii_shield/` root (underscore — historical data dir). Claude
+ * Desktop does not set `CLAUDE_PLUGIN_DATA` for mcpb plugins, so
+ * `getDataDir()` falls back to this user-global path which already survives
+ * `/plugin remove`. No separate "dash-prefixed" dir needed.
+ *
+ * Resolution order:
+ * 1. `PII_SHIELD_MAPPINGS_DIR` — explicit override for tests / enterprise
+ * 2. `<getDataDir()>/mappings` — follows whatever the shared data dir resolves to
+ */
+function getMappingsDir(): string {
+  if (_cachedMappingsDir) return _cachedMappingsDir;
+
+  const explicit = process.env.PII_SHIELD_MAPPINGS_DIR;
+  if (explicit && explicit.length > 0) {
+    ensureDirSecure(explicit);
+    _cachedMappingsDir = explicit;
+    _cachedMappingsDirSource = "PII_SHIELD_MAPPINGS_DIR env override";
+    return explicit;
+  }
+
+  const mappings = path.join(getDataDir(), "mappings");
+  ensureDirSecure(mappings);
+  _cachedMappingsDir = mappings;
+  _cachedMappingsDirSource = `${getDataDirSource()}/mappings`;
+  return mappings;
 }
 
 export const ENV = {
@@ -119,8 +172,14 @@ export const PATHS = {
   get DATA_DIR()     { return getDataDir(); },
   get MODELS_DIR()   { return path.join(getDataDir(), "models"); },
   get DEPS_DIR()     { return path.join(getDataDir(), "deps"); },
-  get MAPPINGS_DIR() { return path.join(getDataDir(), "mappings"); },
-  get REVIEWS_DIR()  { return path.join(getDataDir(), "reviews"); },
+  /**
+   * v2.1: MAPPINGS_DIR is resolved independently from DATA_DIR so session
+   * mappings survive `/plugin remove` (CLAUDE_PLUGIN_DATA wipe). See
+   * `getMappingsDir()` for resolution rules.
+   */
+  get MAPPINGS_DIR() { return getMappingsDir(); },
+  /** Reviews co-located with mappings (prefixed `review_<sid>.json`). */
+  get REVIEWS_DIR()  { return getMappingsDir(); },
   get AUDIT_DIR()    { return path.join(getDataDir(), "audit"); },
 };
 

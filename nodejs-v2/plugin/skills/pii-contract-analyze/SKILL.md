@@ -111,25 +111,29 @@ The marker+resolve_path tools stay available as a reliability net — the auto-B
 
 | Tool name (suffix) | Parameters | Returns to Claude |
 |---|---|---|
-| `anonymize_file` | file_path, language, prefix, **review_session_id** | output_path (.txt) + session_id + output_dir + docx_output_path (.docx, for .docx input only). For long docs: returns `status: "chunked"` with session_id and total_chunks. |
+| `anonymize_file` | file_path, language, prefix, **session_id**, **review_session_id** | output_path (.txt) + session_id + doc_id + pool_size + documents_in_session + output_dir + docx_output_path (.docx, for .docx input only). For long docs: returns `status: "chunked"` with session_id and total_chunks. |
 | `anonymize_next_chunk` | session_id | Progress: processed_chunks, total_chunks, progress_pct, entities_so_far |
 | `get_full_anonymized_text` | session_id | output_path, session_id, output_dir, docx_output_path (same as anonymize_file) |
 | `resolve_path` | filename, marker | absolute path + parent dir (fallback when auto-BFS in `anonymize_file` can't find the file — user-drops-marker-next-to-file ritual) |
 | `deanonymize_text` | text, session_id, output_path | **File path only** (takes anonymized text, writes deanonymized file) |
-| `deanonymize_docx` | file_path, session_id | **File path only** |
+| `deanonymize_docx` | file_path, session_id? | **File path only**. If `session_id` is omitted, server reads `pii_shield.session_id` from the input .docx's `docProps/custom.xml` — works across chats/sessions without needing to pass session_id manually. |
 | `get_mapping` | session_id | Placeholder keys + types only |
 | `list_entities` | — | Server status and config |
 | `find_file` | filename | Full host path(s) — searches configured work_dir only (fallback) |
 | `start_review` | session_id | Opens the review panel in the chat (MCP Apps iframe). No URL, no browser. |
 | `apply_review_overrides` | session_id, overrides | Called automatically by the review panel when the user clicks Approve. Claude does NOT call this directly. |
 | `apply_tracked_changes` | file_path, changes (JSON), author | Output .docx with Word-native w:del/w:ins revision marks |
+| `export_session` | session_id, passphrase, output_path | `{archive_path, archive_size_bytes}` — encrypted `.pii-session` archive for team handoff. |
+| `import_session` | archive_path, passphrase, overwrite? | `{session_id, overwritten, document_count, had_review}` — restores a session's mapping locally after receiving an archive from a colleague. |
 
 **DO NOT USE these tools** (they exist on the server but must not be called for file workflows):
 - `anonymize_text` — sends raw text through the API. Only acceptable if user pasted text into chat.
 - `scan_text` — sends raw text through the API.
 - `anonymize_docx` — use `anonymize_file` instead (handles .docx automatically).
 
-**`prefix` parameter**: Use for multi-file workflows to avoid placeholder collisions. Example: `prefix="D1"` → `<D1_ORG_1>`, `prefix="D2"` → `<D2_ORG_1>`. Each file gets its own prefix and session_id.
+**`prefix` parameter**: Optional per-doc label WITHIN a shared session. Example: `prefix="D1"` prepends to placeholders as `<D1_ORG_1>`. Use it only when the user explicitly wants to visually distinguish placeholders from different documents inside the SAME matter (power-user case: "party A track" vs "party B track"). The default behaviour — no prefix — is recommended; identical entities across files in one session will coalesce into the same placeholder automatically.
+
+**`session_id` parameter (multi-file workflow)**: Pass the `session_id` from a previous `anonymize_file` call to ADD the new document to the same session. Identical entities across files in the session share the **same placeholder** (e.g. `Acme Corp.` becomes `<ORG_1>` in every file). The response includes the same `session_id`, a fresh `doc_id`, and `pool_size` (running count of unique entities). **This is the default in ALL modes (MEMO, REDLINE, SUMMARY, COMPARISON, BULK, ANONYMIZE-ONLY) when the user uploads N≥2 files and confirms they're part of one matter** — see `references/bulk-mode.md` "One matter" pipeline for the full step list. For unrelated files across separate matters, omit this parameter and use `prefix="D{i}"` instead.
 
 **`review_session_id` parameter**: Pass the `session_id` from a previous `anonymize_file` call after HITL review. The server fetches the user's overrides internally and re-anonymizes. PII never passes through Claude.
 
@@ -138,6 +142,56 @@ The marker+resolve_path tools stay available as a reliability net — the auto-B
 ## Skip mode
 
 If user says "skip pii shield", "don't anonymize", "work directly" — skip anonymization, work with the file directly.
+
+---
+
+## Continuing in a later session (cross-chat deanonymize)
+
+PII Shield v2.1+ embeds `pii_shield.session_id` into the `docProps/custom.xml` of every emitted `_anonymized.docx`. This makes the file **self-describing**: the server can recover the session_id without Claude holding it in context. If the session has multiple documents (a "one matter" multi-file session), EVERY file in the session carries the SAME session_id in custom.xml, and the shared mapping covers all of them — `deanonymize_docx` on any one file restores every placeholder in it from that matter's pool.
+
+**When the user returns in a new chat with an anonymized document and asks to restore PII** (e.g. "deanonymize this", "give me the PII version", "restore my memo"):
+
+1. Ask for (or accept) the file: `.docx` files carry their session_id internally. `.txt`/`.pdf` files don't — for those, the user must either pass the session_id or show you a parent anonymized `.docx`.
+2. Call `deanonymize_docx(file_path: "<path>")` — **no `session_id` argument needed** for .docx with embedded metadata.
+3. Server reads `docProps/custom.xml` → finds session_id → loads mapping from `~/.pii-shield/mappings/` → returns `restored_path`.
+4. If response contains `"session_id_source": "custom_xml"` — tell the user the file was self-identifying (bonus clarity).
+5. If response is an error like `Mapping not found for session 'X'`, the mapping was cleaned up (TTL, or it was created on another machine). Ask the user if they have a `.pii-session` archive to import (team-handoff case).
+6. ABSOLUTE BAN #2 still applies: NEVER read the restored file.
+
+For `.txt` / `.pdf` and for files where the user overwrote `custom.xml`: ask the user to pass `session_id` explicitly via `AskUserQuestion`, or show `list_entities` (which lists recent sessions) and let them pick.
+
+---
+
+## Team handoff (export / import encrypted session)
+
+When one lawyer anonymized a document and a colleague needs to restore PII on their machine, the mapping itself must cross the trust boundary. PII Shield v2.1 ships this via an **AES-256-GCM + scrypt** encrypted archive — no network, no cloud.
+
+### Exporter side — "передай коллеге" / "export for X"
+
+When the user asks to export a session for a colleague:
+
+1. Make sure you know the `session_id` to export. If it's the current session, use it; otherwise call `list_entities` to see recent sessions and confirm with the user.
+2. Ask the user for a passphrase via `AskUserQuestion` (or let them paste one). Minimum 4 characters; in practice 16+ with words is safer. Do **not** suggest a passphrase yourself.
+3. Pick an `output_path`: by default `<source_dir>/<matter-label>.pii-session`. Absolute paths work best.
+4. Call `export_session(session_id, passphrase, output_path)`.
+5. Show the user the archive path AND tell them verbatim:
+   > "Send the colleague TWO things **via different channels**:
+   > (1) the `.pii-session` archive (any file channel — email, Signal, SharePoint),
+   > (2) the passphrase (a separate channel — phone call, password manager share).
+   >
+   > Never send both in the same message. The archive is authenticated-encrypted; a wrong passphrase fails the decrypt loudly.
+   >
+   > Also send the anonymized documents the colleague needs to restore — those are separate from the archive."
+6. **Do NOT echo the passphrase in your reply.** If the user already typed it in chat that's their choice; you don't repeat it.
+
+### Importer side — "восстанови от коллеги" / "import from X"
+
+When the user receives an archive and asks to use it:
+
+1. Confirm you have both: the `.pii-session` archive path and the passphrase.
+2. Call `import_session(archive_path, passphrase)`. If the response is `error: Session 'X' already exists locally`, the same session_id already sits in the user's mapping store — ask the user whether to `overwrite` (true will replace the local copy with the imported one).
+3. On success you get `session_id`. Now `deanonymize_docx(<colleague's anonymized file path>)` works — the file's `custom.xml` already names the session_id and the mapping is local.
+4. If the user provides a wrong passphrase, the response `error` message says so literally — show it to the user, ask for the correct passphrase, retry.
 
 ---
 
@@ -203,6 +257,19 @@ Detect the mode from the user's request. If ambiguous, ask.
 | "compare documents", "diff", "what changed", "differences" | **COMPARISON** |
 | Multiple files uploaded + any of the above | **BULK** (wraps any mode above) |
 | "just anonymize", "anonymize only", "only anonymization" | **ANONYMIZE-ONLY** |
+
+### Multi-file clarification (triggered by FILE COUNT ≥ 2, not content)
+
+Whenever the user uploads **2 or more files** for ANY mode (MEMO, REDLINE, SUMMARY, COMPARISON, BULK, ANONYMIZE-ONLY), BEFORE calling the first `anonymize_file` ask ONE `AskUserQuestion`:
+
+> I see N files. Are they part of **one matter** (e.g. MSA + Amendment + SOW, same parties across files) or **separate matters** (e.g. unrelated NDAs from different clients)?
+
+- **One matter (Recommended)** → chain `session_id` across all files. Identical entities share placeholders. One review panel with N tabs. One deanonymize call. See `references/bulk-mode.md` "One matter" pipeline.
+- **Separate matters** → each file gets its own session with `prefix="D{i}"`. Placeholders don't coalesce across files. See `references/bulk-mode.md` "Separate matters" pipeline.
+
+The question is based strictly on file count, never on peeking at file contents (ABSOLUTE BAN #1). If the user has already stated intent in the conversation ("compare these two unrelated NDAs", "merge these three amendments"), skip the question and pick the matching pipeline.
+
+For N = 1 file this question does not apply — go straight into the mode's single-file pipeline.
 
 ---
 
@@ -287,12 +354,25 @@ Read `references/bulk-mode.md` + reference file(s) for the wrapped mode before s
 
 ## MODE: ANONYMIZE-ONLY
 
-Just anonymize and return the anonymized file. No analysis. No reference files needed.
+Just anonymize and return the anonymized file(s). No analysis. No reference files needed.
 
-### Pipeline
+### Pipeline (single file)
 
 1. Warm-up (if not already done in YOUR FIRST ACTION): `list_entities()` → verify `ner_ready: true`.
 2. Call `anonymize_file(file_path: "<path or filename>")`. Remember `session_id`, `output_path`, `output_rel_path`, `output_dir`. **DO NOT Read the output.** In ANONYMIZE-ONLY mode, Claude NEVER reads the file — user is the only one who sees anonymized content. If "file not found" → fall back to `resolve_path` + marker.
 3. Call `start_review(session_id)`. Tell user: "Review panel opened. Click Approve, then send me any short message (e.g. 'done') to continue." Stop and wait.
 4. On user's next message, call `anonymize_file(file_path: "<same path>", review_session_id: session_id)` unconditionally. Handle the 3 statuses (`waiting_for_approval` → ask user to click Approve and retry; `approved_no_changes` → use originals; `success` → REPLACE all values). Still DO NOT Read the output.
-5. Present the anonymized file link (`output_path` and/or `<input_dir>/<output_rel_path>`) to the user and tell them the `session_id` in case they need deanonymization later.
+5. Present the anonymized file link (`output_path` and/or `<input_dir>/<output_rel_path>`) to the user and tell them the `session_id` in case they need deanonymization later. Tell them the anonymized `.docx` carries `session_id` in its metadata — they can return in a new chat with just the file and you'll be able to restore PII.
+
+### Pipeline (multiple files → one shared session)
+
+When the user uploads multiple files and says "just anonymize them" (no analysis requested), group them into **one session** so identical entities across files share placeholders. This is the v2.1 way; don't fall back to the legacy D1/D2 prefix pattern for this case.
+
+1. Warm-up: `list_entities()` → verify `ner_ready: true`.
+2. First file: `anonymize_file(file_path: "<path_1>")` — note the returned `session_id` (call it `S`).
+3. Remaining files: for each file i in 2..N call `anonymize_file(file_path: "<path_i>", session_id: S)`. Each response returns the same `session_id`, a new `doc_id`, and a growing `pool_size`. All N emitted `.docx` carry `session_id=S` in their `docProps/custom.xml`.
+4. Call `start_review(session_id: S)` once. The panel shows all entities across all N docs (they're a single session now). Tell the user: "Review panel opened. Click Approve, then send any short message to continue."
+5. On user's next message, call `anonymize_file(file_path: "<path_i>", review_session_id: S)` for each path i in 1..N, unconditionally, and handle the 3 statuses per file (same logic as single-file step 4). If ANY returned `waiting_for_approval`, ask user to approve and retry those paths next turn.
+6. Present all N anonymized file links to the user. State the `session_id` ONCE and explain: "Одинаковые стороны во всех файлах помечены одинаково. Когда понадобится расшифровать — верните любой из этих файлов (или ваш memo на их основе) в новом чате и вызовите `deanonymize_docx` — сессия определится автоматически по метаданным docx."
+
+The same pattern (chain `session_id`) is also the default in BULK-wrapped modes (MEMO, REDLINE, SUMMARY, COMPARISON when N≥2 files). See `references/bulk-mode.md` for the full pipeline and for the N≥2 clarifying question (one matter vs separate matters) that the skill must ask before the first `anonymize_file` call.

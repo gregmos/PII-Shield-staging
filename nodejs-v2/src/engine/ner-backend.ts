@@ -1,12 +1,16 @@
 /**
  * PII Shield v2.0.0 — GLiNER NER Backend
  * Uses the `gliner` npm package (Node.js variant) with onnxruntime-node.
- * Model: knowledgator/gliner-pii-base-v1.0 (ONNX fp32, 665 MB)
+ * Model: knowledgator/gliner-pii-base-v1.0 (ONNX fp32, ~634 MB)
  *
- * The model + tokenizer files are BUNDLED inside the .mcpb at
- * `<extension_root>/models/gliner-pii-base-v1.0/` — no runtime download.
- * See `plugin/build-plugin.mjs` for the bundling step, and the
- * `ensureModelFiles` function below for resolution.
+ * The model is **not** bundled in the .mcpb (keeps the plugin <2 MB for fast
+ * install). End users run `scripts/install-model.ps1` (Windows) or
+ * `scripts/install-model.sh` (macOS/Linux) before installing the .mcpb — these
+ * scripts download the model from HuggingFace into `~/.pii_shield/models/
+ * gliner-pii-base-v1.0/`. See `ensureModelFiles` below for the runtime
+ * auto-BFS that finds the model across several common locations, and the
+ * `NEEDS_SETUP` envelope in `src/index.ts:handleListEntities` for the
+ * user-facing error path when the model isn't in place.
  */
 
 import path from "node:path";
@@ -221,6 +225,7 @@ export type NerPhase =
   | "idle"
   | "installing_deps"
   | "loading_model"
+  | "needs_setup"
   | "ready"
   | "error";
 let _nerPhase: NerPhase = "idle";
@@ -534,92 +539,105 @@ const MODEL_MIN_SIZE_BYTES = 600 * 1024 * 1024;
  * Input files are read-only inside the extension dir — there is no race on
  * READING them, only on WRITING the assembled output.
  */
-async function ensureModelFiles(): Promise<{ modelPath: string; tokenizerDir: string }> {
+/**
+ * Typed error thrown by `ensureModelFiles` when no candidate directory on
+ * disk has a valid GLiNER model. Caught by `initGliner` which translates it
+ * into a `phase: "needs_setup"` NER status, which `handleListEntities`
+ * serialises into a user-facing `setup_instructions` envelope.
+ */
+export interface ModelNotFoundError extends Error {
+  code: "NEEDS_SETUP";
+  searched: string[];
+}
+
+/**
+ * Ordered list of directories to check for an already-installed GLiNER
+ * model. First valid match wins. The list is intentionally short and
+ * targets common user-chosen locations — no deep BFS, no fuzzy matching.
+ */
+function candidateModelDirs(): string[] {
+  const home = os.homedir();
+  const dirs: string[] = [];
+
+  // 1. Explicit override via Claude Desktop Extension settings
+  // (`${user_config.models_path}` → env PII_SHIELD_MODELS_DIR).
+  const userPath = (process.env.PII_SHIELD_MODELS_DIR || "").trim();
+  if (userPath) dirs.push(path.join(userPath, MODEL_SLUG));
+
+  // 2. Recommended default — the location install-model.ps1/.sh writes to.
+  dirs.push(path.join(home, ".pii_shield", "models", MODEL_SLUG));
+
+  // 3. CLAUDE_PLUGIN_DATA — legacy bundled-with-mcpb location from pre-thin
+  // builds. User may have upgraded without moving files.
+  if (process.env.CLAUDE_PLUGIN_DATA) {
+    dirs.push(path.join(process.env.CLAUDE_PLUGIN_DATA, "models", MODEL_SLUG));
+  }
+
+  // 4. User manually dropped the folder in Downloads.
+  dirs.push(path.join(home, "Downloads", MODEL_SLUG));
+
+  // 5. Bundle-relative fallback — if this bundle ever ships alongside a
+  // models dir (dev fat-build staging dir, legacy .mcpb pre-thin), pick it up.
   const bundleRoot = path.dirname(fileURLToPath(import.meta.url));
-  const bundledDir = path.join(bundleRoot, "models", MODEL_SLUG);
-  const modelPath = path.join(bundledDir, "model.onnx");
-  const partA = path.join(bundledDir, "model.onnx.part-aa");
-  const partB = path.join(bundledDir, "model.onnx.part-ab");
+  dirs.push(path.join(bundleRoot, "models", MODEL_SLUG));
 
-  // Verify tokenizer presence (cheap fail-fast).
-  for (const f of TOKENIZER_FILES) {
-    const tokFile = path.join(bundledDir, f);
-    if (!fs.existsSync(tokFile)) {
-      throw new Error(
-        `Bundled tokenizer file '${f}' missing at ${tokFile}. ` +
-        `Please reinstall the PII Shield extension.`,
-      );
-    }
-  }
+  // De-duplicate while preserving order.
+  return [...new Set(dirs)];
+}
 
-  // Fast path: assembled model already present and intact.
+/**
+ * Exported for `handleListEntities` so the `needs_setup` envelope can include
+ * the exact paths tried. Re-computed fresh each call so it reflects current
+ * env (`PII_SHIELD_MODELS_DIR`, `CLAUDE_PLUGIN_DATA`) without caching.
+ */
+export function getNeedsSetupSearched(): string[] {
+  return candidateModelDirs();
+}
+
+/** All required files in one directory, and `model.onnx` at least MIN size. */
+function isValidModelDir(dir: string): boolean {
+  const modelPath = path.join(dir, "model.onnx");
+  if (!fs.existsSync(modelPath)) return false;
   try {
-    const size = fs.statSync(modelPath).size;
-    if (size >= MODEL_MIN_SIZE_BYTES) {
-      nerLog(`[NER] Using assembled model at ${modelPath} (${(size / 1024 / 1024).toFixed(1)} MB)`);
-      return { modelPath, tokenizerDir: bundledDir };
-    }
-    nerLog(`[NER] Existing model.onnx is only ${size} bytes (< ${MODEL_MIN_SIZE_BYTES}) — re-assembling`);
-    try { fs.unlinkSync(modelPath); } catch { /* best effort */ }
-  } catch (e: any) {
-    if (e.code !== "ENOENT") throw e;
-    // ENOENT — first run, proceed to assembly
+    if (fs.statSync(modelPath).size < MODEL_MIN_SIZE_BYTES) return false;
+  } catch {
+    return false;
   }
+  return TOKENIZER_FILES.every((f) => fs.existsSync(path.join(dir, f)));
+}
 
-  // Cold path: concat parts → model.onnx. Parts MUST be present in a healthy bundle.
-  if (!fs.existsSync(partA) || !fs.existsSync(partB)) {
-    throw new Error(
-      `Bundled model parts missing: expected ${partA} + ${partB}. ` +
-      `This indicates a corrupted .mcpb install. Please reinstall the PII Shield extension.`,
-    );
-  }
-
-  nerLog(`[NER] Assembling model from part-aa + part-ab…`);
-  setNerStatus("loading_model", 5, "Preparing GLiNER model (one-time assembly from bundle)…");
-
-  // Write to process-specific tmp so concurrent instances don't collide.
-  const tmpPath = `${modelPath}.${process.pid}.tmp`;
-  const CHUNK = 1 * 1024 * 1024; // 1 MB read/write chunks
-  const buf = Buffer.alloc(CHUNK);
-  try {
-    const dstFd = fs.openSync(tmpPath, "w");
-    try {
-      for (const partPath of [partA, partB]) {
-        const srcFd = fs.openSync(partPath, "r");
-        try {
-          let bytesRead: number;
-          while ((bytesRead = fs.readSync(srcFd, buf, 0, CHUNK, null)) > 0) {
-            fs.writeSync(dstFd, buf, 0, bytesRead);
-          }
-        } finally {
-          fs.closeSync(srcFd);
-        }
-      }
-      try { fs.fsyncSync(dstFd); } catch { /* non-fatal on some FS */ }
-    } finally {
-      fs.closeSync(dstFd);
+/**
+ * Find the GLiNER model on disk via an ordered candidate list. The model is
+ * installed by the user via `scripts/install-model.ps1` (Windows) or
+ * `scripts/install-model.sh` (macOS/Linux) **before** they install the
+ * .mcpb — see README for the 3-step install.
+ *
+ * At runtime this function only **reads** (existsSync, statSync). There is
+ * no download, no lock, no multi-process write race — any number of Claude
+ * Desktop-spawned server instances can call it concurrently and they will
+ * all land on the same read-only file.
+ *
+ * If no candidate passes validation, throws a typed `ModelNotFoundError`
+ * with `code: "NEEDS_SETUP"` and the list of paths tried — used by
+ * `initGliner` to surface an actionable envelope to the user.
+ */
+async function ensureModelFiles(): Promise<{ modelPath: string; tokenizerDir: string }> {
+  for (const dir of candidateModelDirs()) {
+    if (isValidModelDir(dir)) {
+      const modelPath = path.join(dir, "model.onnx");
+      const size = fs.statSync(modelPath).size;
+      nerLog(`[NER] auto-detected model at ${dir} (${(size / 1024 / 1024).toFixed(1)} MB)`);
+      return { modelPath, tokenizerDir: dir };
     }
-
-    // Atomic rename to final. On Windows, renameSync replaces an existing
-    // destination unless it's open. If we lose the race to a peer, we just
-    // use theirs (byte-identical content).
-    try {
-      fs.renameSync(tmpPath, modelPath);
-    } catch (e: any) {
-      try { fs.unlinkSync(tmpPath); } catch { /* */ }
-      if (!fs.existsSync(modelPath) || fs.statSync(modelPath).size < MODEL_MIN_SIZE_BYTES) {
-        throw new Error(`Failed to finalize assembled model: ${e.message || e}`);
-      }
-      nerLog(`[NER] Rename race lost; using peer's assembled model at ${modelPath}`);
-    }
-  } catch (e) {
-    try { fs.unlinkSync(tmpPath); } catch { /* */ }
-    throw e;
   }
-
-  const finalSize = fs.statSync(modelPath).size;
-  nerLog(`[NER] Assembled model ready at ${modelPath} (${(finalSize / 1024 / 1024).toFixed(1)} MB)`);
-  return { modelPath, tokenizerDir: bundledDir };
+  const err = new Error(
+    "GLiNER model files not found. Run scripts/install-model.ps1 (Windows) " +
+    "or scripts/install-model.sh (macOS/Linux) before using PII Shield. " +
+    "See README.md for the one-liner.",
+  ) as ModelNotFoundError;
+  err.code = "NEEDS_SETUP";
+  err.searched = candidateModelDirs();
+  throw err;
 }
 
 /**
@@ -970,6 +988,21 @@ async function initGliner(): Promise<void> {
     setNerStatus("ready", 100, "PII Shield NER ready.");
     nerLog(`[NER] GLiNER initialized (model=${modelPath})`);
   } catch (e) {
+    // Model-not-found is a benign user-setup situation, not a native load
+    // failure. Surface it as a dedicated `needs_setup` phase so the skill
+    // can prompt the user to run the install-model one-liner instead of
+    // printing scary native-addon diagnostics.
+    if ((e as ModelNotFoundError)?.code === "NEEDS_SETUP") {
+      _initFailed = true;
+      _initError = String(e);
+      setNerStatus(
+        "needs_setup",
+        0,
+        "GLiNER model not installed. Run the install-model script — see setup_instructions.",
+      );
+      nerLog(`[NER] needs_setup — searched: ${(e as ModelNotFoundError).searched.join(" | ")}`);
+      throw e;
+    }
     _initFailed = true;
     _initError = String(e);
     const enriched = enrichNerError(e);
@@ -1001,6 +1034,35 @@ export async function initNer(): Promise<void> {
   if (!_initPromise) {
     _initPromise = initGliner();
   }
+  return _initPromise;
+}
+
+/**
+ * Force-discard any prior init state and run `initGliner()` from scratch.
+ *
+ * Used by the `needs_setup` retry path in `handleListEntities` — after the
+ * user installs the model via `install-model.ps1`/`.sh` we want a fresh
+ * auto-BFS scan regardless of what `_initFailed` / `_initPromise` happen to
+ * hold. Unlike `initNer()` this does NOT gate on `_initFailed`; it
+ * unconditionally clears the module-level state and starts a new
+ * `initGliner()` call. Safe to invoke repeatedly.
+ *
+ * Why not just fix `initNer()`: its gated behaviour is relied on by
+ * `PIIEngine.startNerBackground()` so two near-simultaneous startup calls
+ * share a single in-flight init promise instead of launching two copies.
+ * We don't want to break that coordination — a dedicated retry primitive
+ * is safer.
+ */
+export async function forceReinitNer(): Promise<void> {
+  _initFailed = false;
+  _initError = "";
+  _initDiagnostic = null;
+  _initPromise = null;
+  _gliner = null;
+  _nerPhase = "idle";
+  _nerProgressPct = 0;
+  _nerMessage = "";
+  _initPromise = initGliner();
   return _initPromise;
 }
 

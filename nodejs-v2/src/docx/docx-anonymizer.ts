@@ -12,11 +12,12 @@ import {
   getParagraphText, extractText, docxToHtml, type DocxModel, type Segment,
 } from "./docx-reader.js";
 import { PIIEngine } from "../engine/pii-engine.js";
-import { saveMapping, loadMapping } from "../mapping/mapping-store.js";
-import { assignPlaceholders } from "../engine/entity-dedup.js";
+import { saveMapping, loadMapping, newSessionId } from "../mapping/mapping-store.js";
+import { assignPlaceholders, createPlaceholderState, type PlaceholderState } from "../engine/entity-dedup.js";
 import { nerLog } from "../engine/ner-backend.js";
 import type { DetectedEntity } from "../engine/pattern-recognizers.js";
 import { neutralizeHostRunEmphasis, findRunProps } from "./docx-run-utils.js";
+import { writePiiShieldProps } from "./docx-custom-props.js";
 import { XMLSerializer } from "@xmldom/xmldom";
 
 function escapeRegExp(s: string): string {
@@ -302,8 +303,16 @@ export async function anonymizeDocxWithMapping(
  * used the merged extractText() format.
  */
 export async function anonymizeDocx(
-  docxPath: string, language = "en", prefix = "",
-): Promise<Record<string, unknown>> {
+  docxPath: string,
+  language = "en",
+  prefix = "",
+  options: {
+    existingSessionId?: string;
+    sharedState?: PlaceholderState;
+    sourceHash?: string;
+    anonymizedAt?: string;
+  } = {},
+): Promise<Record<string, unknown> & { state: PlaceholderState }> {
   const t0 = Date.now();
   const engine = PIIEngine.getInstance();
   await engine.ensureReady();
@@ -320,7 +329,8 @@ export async function anonymizeDocx(
   const allPElems = iterAllWpElements(model.mainDoc);
   const detected = await engine.detect(fullText, language);
   nerLog(`[DOCX] full-text detection (${fullText.length} chars) → ${detected.length} entities`);
-  const { entities: placedEntities, mapping } = assignPlaceholders(detected, prefix);
+  const state = options.sharedState ?? createPlaceholderState();
+  const { entities: placedEntities, mapping } = assignPlaceholders(detected, prefix, state);
 
   // Map placeholder by exact text so we can apply per-paragraph replacements
   // (the placeholder for "Acme Corp" is the same regardless of where it appeared).
@@ -329,8 +339,11 @@ export async function anonymizeDocx(
     reverseMap[realText] = placeholder;
   }
 
-  // Save target session + output dir
-  const sessionId = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+  // Save target session + output dir. If the caller supplied an existing
+  // session_id (multi-file extend path), reuse it verbatim; otherwise
+  // generate a fresh timestamp-based id (same format as newSessionId in
+  // mapping-store) so the mappings dir lists chronologically.
+  const sessionId = options.existingSessionId ?? newSessionId();
   const outDir = path.join(path.dirname(docxPath), `pii_shield_${sessionId}`);
   fs.mkdirSync(outDir, { recursive: true });
   const outPath = path.join(outDir, `${path.basename(docxPath, ".docx")}_anonymized.docx`);
@@ -351,7 +364,26 @@ export async function anonymizeDocx(
   }
   await saveDocx(model, outPath);
 
-  saveMapping(sessionId, mapping, { source: docxPath });
+  // When running inside an existing session (multi-file extend), skip the
+  // metadata-wiping saveMapping here — the caller will persist the full
+  // state + documents list via saveSessionState afterwards.
+  if (!options.existingSessionId) {
+    saveMapping(sessionId, mapping, { source: docxPath });
+  }
+
+  // Embed session metadata into the emitted .docx via docProps/custom.xml.
+  // This makes the file self-describing: deanonymize_docx(path) can pick
+  // up the session_id without the caller passing it explicitly. Failure is
+  // non-fatal — the mapping on disk is still the authoritative source.
+  try {
+    await writePiiShieldProps(outPath, {
+      session_id: sessionId,
+      source_hash: options.sourceHash ?? "",
+      anonymized_at: options.anonymizedAt ?? new Date().toISOString(),
+    });
+  } catch (e) {
+    nerLog(`[DOCX] writePiiShieldProps(${outPath}) failed (non-fatal): ${e}`);
+  }
 
   // Write a .txt companion next to the .docx output containing the flattened
   // anonymized text. Claude reads this directly via the Read tool instead of
@@ -394,5 +426,6 @@ export async function anonymizeDocx(
       text: e.text, type: e.type, start: e.start, end: e.end,
       score: e.score, placeholder: e.placeholder || "",
     })),
+    state,
   };
 }
