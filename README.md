@@ -40,15 +40,16 @@ Document ──> [PII Shield on your machine] ──> anonymized text ──> [C
 
 | | Feature | Details |
 |:-:|---------|---------|
-| 🔒 | **Zero PII in API** | `anonymize_file` reads locally, returns only a file path. Claude reads the anonymized file from disk. |
-| 🧠 | **GLiNER zero-shot NER** | [`knowledgator/gliner-pii-base-v1.0`](https://huggingface.co/knowledgator/gliner-pii-base-v1.0) via ONNX Runtime. Handles ALL-CAPS, domain-specific names, multilingual text. No Python, no PyTorch. |
-| 👤 | **Human-in-the-Loop review** | MCP Apps iframe UI rendered directly in Claude Desktop. Remove false positives, add missed entities — all occurrences updated automatically. |
-| 📄 | **PDF + DOCX + plain text** | `.pdf`, `.docx` (formatting + tracked changes preserved), `.txt`, `.md`, `.csv` |
-| 🇪🇺 | **17 EU pattern recognizers** | UK NIN/NHS, DE Tax ID, FR NIR, IT Fiscal Code, ES DNI/NIE, EU VAT/IBAN, and more |
-| 🔗 | **Entity deduplication** | "Acme" → `<ORG_1>`, "Acme Corp." → `<ORG_1a>`, "Acme Corporation" → `<ORG_1b>` |
-| ⚡ | **Thin bundle** | ~660 KB `.mcpb` thin-installs in Claude Desktop; runtime deps self-install deterministically on first call. |
-| 🍎 | **macOS binary variant** | Ships with bundled Node 24.15.0 for macOS arm64 + x64 — avoids Claude Desktop's darwin host-runtime launch bug. |
-| 📊 | **Audit logging** | Every tool call logged locally to `~/.pii_shield/audit/`. Proof that no PII left the machine. |
+| 🔒 | **Zero PII in API** | `anonymize_file` reads the document on your machine and returns only a file path + session id. Claude reads the anonymized file from disk — PII never enters an API request. |
+| 🧠 | **GLiNER zero-shot NER** | [`knowledgator/gliner-pii-base-v1.0`](https://huggingface.co/knowledgator/gliner-pii-base-v1.0) over `onnxruntime-node` + `@xenova/transformers` (pinned triplet 1.22.0, deterministic `npm ci`). Handles ALL-CAPS, domain-specific names, multilingual text. No Python, no PyTorch. |
+| 👤 | **Human-in-the-Loop review** | MCP Apps iframe UI rendered directly in Claude Desktop. Remove false positives, add missed entities — all occurrences updated automatically, no localhost browser detour. |
+| 📄 | **PDF + DOCX + plain text** | `.pdf`, `.docx` (formatting + tracked changes preserved), `.txt`, `.md`, `.csv`. Pure-JS `.docx` pipeline — reads, edits, restores without a Word / LibreOffice install. |
+| 🇪🇺 | **17 EU + UK pattern recognizers** | UK (NIN, NHS, passport, CRN, driving licence), DE (tax ID, social security), FR (NIR, CNI), IT (fiscal code, VAT), ES (DNI, NIE), CY (TIC, ID card), EU-wide (VAT, passport) — on top of the generic pack (email, phone, IBAN, credit card, crypto, US IDs, medical licence). 33 entity types in total. |
+| 🔗 | **Entity deduplication** | "Acme" → `<ORG_1>`, "Acme Corp." → `<ORG_1a>`, "Acme Corporation" → `<ORG_1b>`. Canonical form picked once; every variant maps back to the same real value on deanonymize. |
+| 💾 | **Cross-session deanonymize** | Each anonymized `.docx` carries its `session_id` in Word custom properties. Weeks later, in a brand new chat, drop the file in and `deanonymize_docx` restores PII from the embedded id — nothing to remember. |
+| 📦 | **Multi-file sessions** | Anonymize N related documents under one `session_id`; identical entities share the same placeholder across files. One `deanonymize_text` / `deanonymize_docx` call restores PII everywhere. |
+| 🤝 | **Team handoff** | `export_session(passphrase)` packs the mapping + anonymized documents into an encrypted `.pii-session` archive (AES-GCM via scrypt). Colleague runs `import_session` with the passphrase — PII never transits. |
+| 📊 | **Audit logging** | Every tool call + response logged locally to `~/.pii_shield/audit/mcp_audit.log`. NER bootstrap trace, session lifecycle, dropped stderr — all on disk, appendable, off-network. |
 
 ## Quick Start
 
@@ -195,9 +196,27 @@ The included `pii-contract-analyze` skill supports:
 
 ## Detected entity types
 
-**NER-based** (GLiNER zero-shot over ONNX Runtime): `PERSON`, `ORGANIZATION`, `LOCATION`, `NRP`
+Authoritative list is `nodejs-v2/src/engine/entity-types.ts` (`SUPPORTED_ENTITIES`).
 
-**Pattern-based** (pure-JS recognizers, covering the EU regulatory pack): `EMAIL_ADDRESS`, `PHONE_NUMBER`, `URL`, `IP_ADDRESS`, `CREDIT_CARD`, `IBAN_CODE`, `CRYPTO`, `US_SSN`, `US_PASSPORT`, `US_DRIVER_LICENSE`, `UK_NHS`, `UK_NIN`, `UK_PASSPORT`, `DE_TAX_ID`, `FR_NIR`, `IT_FISCAL_CODE`, `ES_DNI`, `ES_NIE`, `CY_TIC`, `EU_VAT`
+**NER-based** (GLiNER zero-shot over ONNX Runtime):
+`PERSON`, `ORGANIZATION`, `LOCATION`, `NRP`
+
+**Generic pattern-based**:
+`EMAIL_ADDRESS`, `PHONE_NUMBER`, `URL`, `IP_ADDRESS`, `ID_DOC`, `CREDIT_CARD`, `IBAN_CODE`, `CRYPTO`, `MEDICAL_LICENSE`
+
+**US**:
+`US_SSN`, `US_PASSPORT`, `US_DRIVER_LICENSE`
+
+**UK**:
+`UK_NHS`, `UK_NIN`, `UK_PASSPORT`, `UK_CRN`, `UK_DRIVING_LICENCE`
+
+**EU-wide**:
+`EU_VAT`, `EU_PASSPORT`
+
+**Country-specific**:
+`DE_TAX_ID`, `DE_SOCIAL_SECURITY`, `FR_NIR`, `FR_CNI`, `IT_FISCAL_CODE`, `IT_VAT`, `ES_DNI`, `ES_NIE`, `CY_TIC`, `CY_ID_CARD`
+
+33 types total (4 NER + 29 pattern-based).
 
 ## Logs
 
