@@ -7,7 +7,7 @@
 # plugin can find it at runtime.
 #
 # One-liner usage (recommended — no file left on disk):
-#   curl -fsSL https://raw.githubusercontent.com/grigorii-moskalev/pii-shield/main/nodejs-v2/scripts/install-model.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/gregmos/PII-Shield/main/nodejs-v2/scripts/install-model.sh | bash
 #
 # Downloaded-file usage:
 #   macOS:  xattr -d com.apple.quarantine install-model.sh && chmod +x install-model.sh && ./install-model.sh
@@ -110,7 +110,7 @@ model_mb=$((model_size / 1024 / 1024))
 echo ""
 echo "[OK] Model installed at $TARGET (${model_mb} MB, total time ${overall_time_str})"
 echo ""
-echo "Next step: install pii-shield-v2.0.0.mcpb from"
-echo "  https://github.com/grigorii-moskalev/pii-shield/releases"
+echo "Next step: install the PII Shield .mcpb for your OS from"
+echo "  https://github.com/gregmos/PII-Shield/releases"
 echo "into Claude Desktop (Settings -> Extensions -> drag-drop)."
 echo ""

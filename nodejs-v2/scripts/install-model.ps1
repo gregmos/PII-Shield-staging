@@ -5,7 +5,7 @@
 # plugin can find it at runtime.
 #
 # One-liner usage (recommended - no file left on disk):
-#   iwr https://raw.githubusercontent.com/grigorii-moskalev/pii-shield/main/nodejs-v2/scripts/install-model.ps1 | iex
+#   iwr https://raw.githubusercontent.com/gregmos/PII-Shield/main/nodejs-v2/scripts/install-model.ps1 | iex
 #
 # Downloaded-file usage:
 #   Double-click install-model.bat (wraps this .ps1 with -ExecutionPolicy Bypass)
@@ -173,7 +173,7 @@ $overallTimeStr = if ($overallMin -gt 0) {
 Write-Host ""
 Write-Host "[OK] Model installed at $TARGET ($modelMb MB, total time $overallTimeStr)" -ForegroundColor Green
 Write-Host ""
-Write-Host "Next step: install pii-shield-v2.0.0.mcpb from"
-Write-Host "  https://github.com/grigorii-moskalev/pii-shield/releases"
+Write-Host "Next step: install pii-shield-v2.0.2-windows-linux.mcpb from"
+Write-Host "  https://github.com/gregmos/PII-Shield/releases"
 Write-Host "into Claude Desktop (Settings -> Extensions -> drag-drop)."
 Write-Host ""

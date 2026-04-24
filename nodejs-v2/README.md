@@ -20,17 +20,17 @@ The model is installed separately from the plugin so Claude Desktop's extension 
 
 **Windows (PowerShell):**
 ```powershell
-iwr https://raw.githubusercontent.com/grigorii-moskalev/pii-shield/main/nodejs-v2/scripts/install-model.ps1 | iex
+iwr https://raw.githubusercontent.com/gregmos/PII-Shield/main/nodejs-v2/scripts/install-model.ps1 | iex
 ```
 
 **macOS / Linux (Terminal):**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/grigorii-moskalev/pii-shield/main/nodejs-v2/scripts/install-model.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gregmos/PII-Shield/main/nodejs-v2/scripts/install-model.sh | bash
 ```
 
 The one-liner downloads 5 files from HuggingFace into `~/.pii_shield/models/gliner-pii-base-v1.0/` (~2-5 min depending on your connection). No file is saved to disk — that avoids Windows SmartScreen and macOS Gatekeeper prompts.
 
-Prefer to read the script first? Download `install-model.ps1` or `install-model.sh` from the [GitHub Release page](https://github.com/grigorii-moskalev/pii-shield/releases) (~3 KB, ~30 lines of code) and run it locally:
+Prefer to read the script first? Download `install-model.ps1` or `install-model.sh` from the [GitHub Release page](https://github.com/gregmos/PII-Shield/releases) (~3 KB, ~30 lines of code) and run it locally:
 
 - **Windows**: right-click `install-model.ps1` → Properties → Unblock → `powershell -ExecutionPolicy Bypass -File install-model.ps1`
 - **macOS**: `xattr -d com.apple.quarantine install-model.sh && chmod +x install-model.sh && ./install-model.sh`
@@ -38,7 +38,7 @@ Prefer to read the script first? Download `install-model.ps1` or `install-model.
 
 ### Step 2 — install the plugin
 
-Download the package for your OS from the [GitHub Release page](https://github.com/grigorii-moskalev/pii-shield/releases) and drag-drop it into Claude Desktop (Settings → Extensions).
+Download the package for your OS from the [GitHub Release page](https://github.com/gregmos/PII-Shield/releases) and drag-drop it into Claude Desktop (Settings → Extensions).
 
 - **Windows / legacy hosts**: `pii-shield-v2.0.2.mcpb` (thin Node MCPB).
 - **macOS**: `pii-shield-v2.0.2-darwin-universal.mcpb` (bundles Node.js so it avoids Claude Desktop's built-in Node launch path).
