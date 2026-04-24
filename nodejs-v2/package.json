@@ -12,9 +12,8 @@
     "build:testkit": "node plugin/build-testkit.mjs",
     "start": "node dist/server.bundle.mjs",
     "dev": "npx tsx src/index.ts",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "smoke": "node scripts/smoke-protocol.mjs"
+    "smoke": "node scripts/smoke-protocol.mjs",
+    "smoke:sharp-shim": "node scripts/smoke-sharp-shim.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
