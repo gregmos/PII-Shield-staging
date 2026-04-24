@@ -1,17 +1,28 @@
 #!/usr/bin/env node
 
 /**
- * PII Shield v2.0.0 — Node.js MCP Server
+ * PII Shield v2.0.1 — Node.js MCP Server
  * Pure Node.js implementation. No Python dependency.
  *
  * Review UI is rendered in-chat via MCP Apps (io.modelcontextprotocol/ui
  * extension). No HTTP sidecar, no browser fallback.
  */
 
-// @ts-ignore — esbuild rewrites this import to the bundled HTML string at build
-// time via `{ loader: { ".html": "text" } }`. The source path is
-// dist/ui/review.html (produced by the vite step), NOT the raw ui/review.html.
-import REVIEW_HTML from "../dist/ui/review.html";
+// REVIEW_HTML is loaded LAZILY (dynamic import) instead of statically — keeps
+// ~150 KB of inline string out of top-level module evaluation, shrinking the
+// startup-parse window that macOS Claude Desktop's UtilityProcess Electron
+// Node has to clear before it can answer the `initialize` handshake. Resolved
+// once per process, cached.
+let _reviewHtml: string | null = null;
+async function getReviewHtml(): Promise<string> {
+  if (_reviewHtml !== null) return _reviewHtml;
+  // @ts-ignore — esbuild's `{ loader: { ".html": "text" } }` returns the
+  // bundled HTML string as the default export at build time. Dynamic-import
+  // form keeps the inlined string in a deferred chunk instead of top-level.
+  const mod = await import("../dist/ui/review.html");
+  _reviewHtml = (mod as any).default ?? (mod as any);
+  return _reviewHtml as string;
+}
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -24,7 +35,7 @@ import { z } from "zod";
 import { VERSION, PATHS, getDataDirSource } from "./utils/config.js";
 import { PIIEngine } from "./engine/pii-engine.js";
 import { SUPPORTED_ENTITIES } from "./engine/entity-types.js";
-import { getNerDiagnostic, getNerError, getNerStats, getNerStatus, getNeedsSetupSearched, forceReinitNer, nerLog } from "./engine/ner-backend.js";
+import { getNerDiagnostic, getNerError, getNerStats, getNerStatus, getNeedsSetupSearched, forceReinitNer, nerLog, retryNerIfRepairDetected } from "./engine/ner-backend.js";
 import {
   saveMapping, loadMapping, getMappingSafe, newSessionId,
   latestSessionId, cleanupOldMappings,
@@ -76,12 +87,22 @@ import { assignPlaceholders, deduplicateOverlaps, createPlaceholderState, type P
 import type { DetectedEntity } from "./engine/pattern-recognizers.js";
 import { logNer } from "./audit/audit-logger.js";
 
+// __step pairs every milestone with a write to BOTH /tmp/piish-banner-debug.log
+// (via __DBG, banner-defined) and ~/.pii_shield/audit/ner_init.log (via
+// __earlyLog). The macOS Claude Desktop UtilityProcess swallows stderr before
+// the host captures it; the file paths survive that.
+const __step = (label: string): void => {
+  try { (globalThis as any).__DBG?.("STEP " + label); } catch { /* */ }
+  try { (globalThis as any).__earlyLog?.("[step] " + label); } catch { /* */ }
+};
+__step("index.ts top-level imports done");
+
 // Fire the on-disk beacon as EARLY as possible — before any tool
 // registrations, before `main()`, before NER init. The rest of module-init
 // and `main()` can crash or hang and we still leave behind a
 // `/tmp/pii-shield-beacon.json` that says "this server process launched".
 // Skill Step 0 uses this as the single most reliable proof-of-life.
-try { startBeacon(); } catch { /* beacon must never block server bootstrap */ }
+try { startBeacon(); __step("after startBeacon"); } catch (e) { __step("startBeacon FAILED " + (e instanceof Error ? e.message : String(e))); }
 
 const REVIEW_RESOURCE_URI = "ui://pii-shield/review.html";
 
@@ -480,10 +501,10 @@ async function handleGetMapping(args: ToolArgs): Promise<string> {
 // ── install-model script URLs (published to main branch + release asset) ─────
 //
 // The one-liner URL pulls from `main` so script updates can ship without
-// cutting a new tag. The release asset URL points at the tagged v2.0.0
+// cutting a new tag. The release asset URL points at the tagged release
 // download (user's preferred "readable file" path).
 //
-// When versioning moves past v2.0.0, update `RELEASE_SCRIPT_BASE` — the raw
+// VERSION already drives `RELEASE_SCRIPT_BASE`; the raw
 // content URL is intentionally unpinned.
 const INSTALL_SCRIPT_RAW_BASE =
   "https://raw.githubusercontent.com/grigorii-moskalev/pii-shield/main/nodejs-v2/scripts";
@@ -529,7 +550,7 @@ async function handleListEntities(_args: ToolArgs): Promise<string> {
   const latest = latestSessionId();
   const stats = getNerStats();
   let nerStatus = getNerStatus();
-  const ready = engine.isNerReady && nerStatus.ready;
+  let ready = engine.isNerReady && nerStatus.ready;
 
   // Short-circuit for the `needs_setup` phase — the user must take action
   // (run install-model one-liner) before NER can become ready. BUT: before
@@ -565,6 +586,74 @@ async function handleListEntities(_args: ToolArgs): Promise<string> {
     // fall through to the normal polling / readiness logic below.
   }
 
+  if (nerStatus.phase === "error") {
+    try {
+      const retried = await retryNerIfRepairDetected();
+      if (retried) {
+        nerStatus = getNerStatus();
+        if (nerStatus.phase === "needs_setup") return renderNeedsSetupEnvelope();
+      }
+    } catch (e) {
+      nerLog(`[retry] repair-detected retry threw: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+      nerStatus = getNerStatus();
+    }
+  }
+
+  ready = engine.isNerReady && nerStatus.ready;
+  const diagnostic = getNerDiagnostic();
+
+  const renderErrorEnvelope = (): string => {
+    const nerError = getNerError();
+    const message = nerStatus.message || nerError || "PII Shield NER initialization failed.";
+    return JSON.stringify({
+      status: "error",
+      phase: nerStatus.phase,
+      progress_pct: nerStatus.progress_pct,
+      message,
+      version: VERSION,
+      runtime: "node.js",
+      node_version: process.version,
+      ner_ready: false,
+      ner_error: nerError || undefined,
+      ner_error_diagnostic: diagnostic ?? undefined,
+      ner_error_suggestions: diagnostic?.suggested_actions ?? undefined,
+      ner_inference_calls: stats.calls,
+      ner_total_entities_detected: stats.totalEntities,
+      ner_last_inference_error: stats.lastError || undefined,
+      supported_entities: [...SUPPORTED_ENTITIES],
+      recent_sessions: latest ? [latest] : [],
+      data_dir: PATHS.DATA_DIR,
+      data_dir_source: getDataDirSource(),
+      user_message: `PII Shield NER failed to initialize: ${message}`,
+      display_instruction:
+        "Print the `user_message` field verbatim to the user. If `ner_error_suggestions` is present, summarize those recovery steps before retrying.",
+    }, null, 2);
+  };
+
+  const renderReadyEnvelope = (): string => JSON.stringify({
+    status: "ready",
+    phase: nerStatus.phase,
+    progress_pct: nerStatus.progress_pct,
+    version: VERSION,
+    runtime: "node.js",
+    node_version: process.version,
+    ner_ready: ready,
+    ner_error: getNerError() || undefined,
+    ner_error_diagnostic: diagnostic ?? undefined,
+    ner_error_suggestions: diagnostic?.suggested_actions ?? undefined,
+    ner_inference_calls: stats.calls,
+    ner_total_entities_detected: stats.totalEntities,
+    ner_last_inference_error: stats.lastError || undefined,
+    supported_entities: [...SUPPORTED_ENTITIES],
+    recent_sessions: latest ? [latest] : [],
+    data_dir: PATHS.DATA_DIR,
+    data_dir_source: getDataDirSource(),
+  }, null, 2);
+
+  if (!ready && nerStatus.phase === "error") {
+    return renderErrorEnvelope();
+  }
+
   if (!ready && nerStatus.phase !== "error") {
     if (
       nerStatus.phase === "installing_deps" ||
@@ -578,6 +667,9 @@ async function handleListEntities(_args: ToolArgs): Promise<string> {
       // `ready`, `error`, or `needs_setup` during the wait.
       nerStatus = getNerStatus();
       if (nerStatus.phase === "needs_setup") return renderNeedsSetupEnvelope();
+      ready = engine.isNerReady && nerStatus.ready;
+      if (!ready && nerStatus.phase === "error") return renderErrorEnvelope();
+      if (ready) return renderReadyEnvelope();
     }
     const humanMessage = nerStatus.message ||
       "PII Shield NER is initializing (first run only). This takes ~1–2 minutes while onnxruntime + transformers install. The GLiNER model was already placed in ~/.pii_shield/models/ by the install-model script.";
@@ -623,26 +715,7 @@ async function handleListEntities(_args: ToolArgs): Promise<string> {
     return JSON.stringify(envelope, null, 2);
   }
 
-  const diagnostic = getNerDiagnostic();
-  return JSON.stringify({
-    status: "ready",
-    phase: nerStatus.phase,
-    progress_pct: nerStatus.progress_pct,
-    version: VERSION,
-    runtime: "node.js",
-    node_version: process.version,
-    ner_ready: ready,
-    ner_error: getNerError() || undefined,
-    ner_error_diagnostic: diagnostic ?? undefined,
-    ner_error_suggestions: diagnostic?.suggested_actions ?? undefined,
-    ner_inference_calls: stats.calls,
-    ner_total_entities_detected: stats.totalEntities,
-    ner_last_inference_error: stats.lastError || undefined,
-    supported_entities: [...SUPPORTED_ENTITIES],
-    recent_sessions: latest ? [latest] : [],
-    data_dir: PATHS.DATA_DIR,
-    data_dir_source: getDataDirSource(),
-  }, null, 2);
+  return renderReadyEnvelope();
 }
 
 async function handleAnonymizeFile(args: ToolArgs): Promise<string> {
@@ -1269,7 +1342,7 @@ async function handleCleanupCache(args: ToolArgs): Promise<string> {
     total_bytes_freed: totalFreed,
     total_mb_freed: Math.round(totalFreed / 1024 / 1024),
     results,
-    note: "Models and deps will re-download on next NER call. Restart the server or call list_entities to trigger re-init.",
+    note: "Models and deps will re-download on next NER call. No host restart should be needed - call list_entities again to trigger re-init.",
   }, null, 2);
 }
 
@@ -1501,7 +1574,9 @@ function wrapPlainTool(name: string, handler: (args: ToolArgs) => Promise<string
 
 // ── McpServer setup ──────────────────────────────────────────────────────────
 
+__step("before new McpServer");
 const server = new McpServer({ name: "PII Shield", version: VERSION });
+__step("after new McpServer");
 
 server.registerTool("find_file", {
   title: "Find file",
@@ -1742,7 +1817,7 @@ registerAppResource(server,
         {
           uri: REVIEW_RESOURCE_URI,
           mimeType: RESOURCE_MIME_TYPE,
-          text: REVIEW_HTML as unknown as string,
+          text: await getReviewHtml(),
         },
       ],
     };
@@ -1779,22 +1854,18 @@ process.on("unhandledRejection", (reason) => {
 // ── Start ────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const earlyLog = (msg: string) => {
-    try { (globalThis as any).__earlyLog?.(msg); } catch { /* */ }
-  };
-
-  earlyLog("[main] enter");
+  __step("main() enter");
 
   // Connect transport FIRST so the MCP `initialize` handshake completes and
   // tools register before any best-effort startup work runs.
-  earlyLog("[main] before server.connect");
+  __step("main() before server.connect");
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  earlyLog("[main] server connected");
+  __step("main() after server.connect");
   console.error(`[PII Shield v${VERSION}] MCP server running on stdio.`);
 
   // Diagnostic: write startup marker so we can verify the process is invoked.
-  earlyLog("[main] before startup.log diag write");
+  __step("main() before startup.log diag write");
   try {
     const diagDir = PATHS.DATA_DIR;
     fs.mkdirSync(diagDir, { recursive: true });
@@ -1811,35 +1882,35 @@ async function main() {
     console.error(
       `[PII Shield] data_dir=${PATHS.DATA_DIR} (source: ${getDataDirSource()})`,
     );
-  } catch (e) { earlyLog("[main] startup.log diag failed: " + e); }
+  } catch (e) { __step("main() startup.log diag failed: " + e); }
 
   // Cleanup expired mappings on startup
-  earlyLog("[main] before cleanupOldMappings");
+  __step("main() before cleanupOldMappings");
   try { cleanupOldMappings(); }
-  catch (e) { earlyLog("[main] cleanupOldMappings failed: " + e); }
+  catch (e) { __step("main() cleanupOldMappings failed: " + e); }
 
   // Start the on-disk bootstrap beacon BEFORE anything else that could
   // influence its fields. The first write captures pid + started_at; later
   // writes (heartbeat + phase changes) overlay NER / tool-call state. The
   // skill reads this file via Bash when MCP tool discovery is still warming
   // up — it's the last-line-of-defence diagnostic.
-  earlyLog("[main] before startBeacon");
+  __step("main() before startBeacon");
   try {
     startBeacon();
     setBeaconTools(_registeredToolNames);
-    earlyLog(`[main] beacon writing to ${getBeaconFilePath()}`);
-  } catch (e) { earlyLog("[main] startBeacon failed: " + e); }
+    __step(`main() beacon writing to ${getBeaconFilePath()}`);
+  } catch (e) { __step("main() startBeacon failed: " + e); }
 
   // Start NER model download/init in background (doesn't block server startup).
   // The model-download step is protected by an inter-process lockfile so that
   // if Claude Desktop spawns two pii-shield instances simultaneously they
   // serialize cleanly instead of racing on the cache file — see
   // ensureModelFiles() in engine/ner-backend.ts.
-  earlyLog("[main] before startNerBackground");
+  __step("main() before startNerBackground");
   try { PIIEngine.getInstance().startNerBackground(); }
-  catch (e) { earlyLog("[main] startNerBackground failed: " + e); }
+  catch (e) { __step("main() startNerBackground failed: " + e); }
 
-  earlyLog("[main] startup complete");
+  __step("main() startup complete");
 }
 
 // All tool registrations have completed at this point (they were all at

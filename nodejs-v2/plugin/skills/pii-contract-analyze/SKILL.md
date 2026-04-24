@@ -28,7 +28,7 @@ If any of them loads a schema → immediately call `list_entities` and continue 
 
 If all three fail → show the user:
 
-> PII Shield MCP tools are installed on your host (Claude Desktop) but this session can't reach them. Known Anthropic bridging bug on Windows. Fixes: (1) restart Claude Desktop and start a fresh session, or (2) install `pii-shield-v2.0.0-plugin.zip` directly into this Cowork session. Meanwhile I can proceed without PII anonymization — OK?
+> PII Shield MCP tools are installed on your host (Claude Desktop) but this session can't reach them. Known Anthropic bridging bug on Windows. Fixes: (1) restart Claude Desktop and start a fresh session, or (2) install `pii-shield-v2.0.1-plugin.zip` directly into this Cowork session. Meanwhile I can proceed without PII anonymization — OK?
 
 ### Rules
 

@@ -1,5 +1,5 @@
 /**
- * PII Shield v2.0.0 — Audit logging
+ * PII Shield v2.0.2 — Audit logging
  * Ported from pii_shield_server.py lines 268-341
  *
  * Two log files in PATHS.AUDIT_DIR (= ${CLAUDE_PLUGIN_DATA}/audit or legacy
@@ -10,7 +10,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { PATHS } from "../utils/config.js";
+import { PATHS, VERSION } from "../utils/config.js";
 
 let _initialized = false;
 let _nerLogPath: string;
@@ -30,8 +30,8 @@ function ensureInit(): void {
   _serverLogPath = path.join(auditDir, "server.log");
   _initialized = true;
 
-  appendLine(_nerLogPath, "===== PII Shield v2.0.0 (Node.js) session started =====");
-  appendLine(_serverLogPath, "===== PII Shield v2.0.0 server started (pid=" + process.pid + ") =====");
+  appendLine(_nerLogPath, `===== PII Shield v${VERSION} (Node.js) session started =====`);
+  appendLine(_serverLogPath, `===== PII Shield v${VERSION} server started (pid=${process.pid}) =====`);
   console.error(`[Audit] NER log: ${_nerLogPath}`);
   console.error(`[Audit] MCP audit log: ${_auditLogPath}`);
   console.error(`[Audit] Server log: ${_serverLogPath}`);

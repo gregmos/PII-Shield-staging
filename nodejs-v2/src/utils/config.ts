@@ -1,5 +1,5 @@
 /**
- * PII Shield v2.0.0 — Configuration
+ * PII Shield v2.0.2 — Configuration
  * Environment variable defaults and constants.
  */
 
@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export const VERSION = "2.0.0";
+export const VERSION = "2.0.2";
 
 /**
  * Resolve the persistent data directory for this plugin instance.
@@ -187,6 +187,10 @@ export const PATHS = {
  * Legacy `~/.pii_shield` location. Kept as a read-only fallback so pre-plugin
  * users with a warmed-up model cache (~665 MB ONNX download) don't have to
  * re-download on the first plugin launch after migrating to the host-managed
- * `CLAUDE_PLUGIN_DATA` layout.
+ * `CLAUDE_PLUGIN_DATA` layout. Function-form (not const) so `os.homedir()`
+ * isn't called at module-eval — keeps top-level synchronous work minimal,
+ * which matters for the macOS Claude Desktop UtilityProcess startup window.
  */
-export const LEGACY_DATA_DIR = path.join(os.homedir(), ".pii_shield");
+export function getLegacyDataDir(): string {
+  return path.join(os.homedir(), ".pii_shield");
+}

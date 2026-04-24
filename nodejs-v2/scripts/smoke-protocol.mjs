@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * PII Shield v2.0.0 — stdio protocol smoke test.
+ * PII Shield v2.0.2 — stdio protocol smoke test.
  *
  * Validates that the MCP server, in isolation from any host, returns the
  * exact envelope shapes required by the MCP Apps spec (2026-01-26) for
@@ -248,7 +248,7 @@ async function main() {
         `(body[0..80]="${bodyText.slice(0, 80)}…")`,
     );
 
-    console.log("\nPASS — all 7 PII Shield v2.0.0 protocol checks green.");
+console.log("\nPASS — all 7 PII Shield v2.0.2 protocol checks green.");
     console.log(
       "       MCP Apps wiring: start_review descriptor carries dual-key resourceUri,",
     );

@@ -48,6 +48,7 @@ const MANIFEST = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "u
 const VERSION = MANIFEST.version;
 const ZIP_NAME = `pii-shield-v${VERSION}-plugin.zip`;
 const MCPB_NAME = `pii-shield-v${VERSION}.mcpb`;
+const SKIP_TESTKIT = process.argv.includes("--skip-testkit");
 
 function addFileToZip(zip, zipPath, filePath) {
   if (!fs.existsSync(filePath)) {
@@ -73,6 +74,13 @@ function addDirToZip(zip, zipPrefix, dirPath, filter) {
     const zipPath = `${zipPrefix}/${relativePath}`.replace(/\\/g, "/");
     zip.file(zipPath, fs.readFileSync(fullPath));
   }
+}
+
+function runMcpb(args) {
+  if (process.platform === "win32") {
+    return spawnSync("cmd.exe", ["/d", "/c", "mcpb.cmd", ...args], { stdio: "inherit" });
+  }
+  return spawnSync("mcpb", args, { stdio: "inherit" });
 }
 
 async function build() {
@@ -124,35 +132,87 @@ async function build() {
     loader: { ".html": "text" },
     banner: {
       js: [
+        // ULTRA-EARLY diagnostic file. Written from the very first instruction
+        // so we can tell if the bundle even started executing under Claude
+        // Desktop's UtilityProcess Electron Node on macOS, where stderr is
+        // dropped before the host captures it.
+        //
+        // Path cascade (first writable wins):
+        //   1. PIISH_DEBUG_DIR env override (manual diagnostic)
+        //   2. CLAUDE_PLUGIN_DATA (host-provided per-plugin dir)
+        //   3. ~/Library/Logs/Claude/ on macOS (next to mcp-server-*.log
+        //      that CD writes itself — proven CD-writable, visible to user
+        //      without spelunking under sandbox redirects)
+        //   4. %TEMP% / $TMPDIR / /tmp (platform default)
+        //   5. ~/.pii_shield/ (legacy fallback)
+        // Why ~/Library/Logs/Claude under macOS first: Yan tested 2026-04-23,
+        // /tmp + ~/.pii_shield writes never appeared on disk, possibly due to
+        // Tahoe sandbox redirect or Node fs being killed before flush. CD's
+        // own logs in that dir DO survive — write next to them.
+        'import * as __dbg_fs from "fs";',
+        'import * as __dbg_path from "path";',
         'import { createRequire } from "module";',
         'import { fileURLToPath as __esm_fileURLToPath } from "url";',
-        'import { dirname as __esm_dirname } from "path";',
-        'import * as __early_fs from "fs";',
-        'import * as __early_path from "path";',
         'import * as __early_os from "os";',
         'const require = createRequire(import.meta.url);',
         'const __filename = __esm_fileURLToPath(import.meta.url);',
-        'const __dirname = __esm_dirname(__filename);',
+        'const __dirname = __dbg_path.dirname(__filename);',
+        'function __resolveDbgPath() {',
+        '  const cs = [];',
+        '  if (process.env.PIISH_DEBUG_DIR) cs.push(process.env.PIISH_DEBUG_DIR);',
+        '  if (process.env.CLAUDE_PLUGIN_DATA) cs.push(process.env.CLAUDE_PLUGIN_DATA);',
+        '  if (process.platform === "darwin") {',
+        '    cs.push(__dbg_path.join(__early_os.homedir(), "Library/Logs/Claude"));',
+        '  }',
+        '  if (process.platform === "win32") {',
+        '    cs.push(process.env.TEMP || "C:\\\\Windows\\\\Temp");',
+        '  } else {',
+        '    cs.push(process.env.TMPDIR || "/tmp");',
+        '  }',
+        '  cs.push(__dbg_path.join(__early_os.homedir(), ".pii_shield"));',
+        '  for (const dir of cs) {',
+        '    try { __dbg_fs.mkdirSync(dir, { recursive: true }); return __dbg_path.join(dir, "piish-banner-debug.log"); } catch (_) {}',
+        '  }',
+        '  return null;',
+        '}',
+        'const __DBG_PATH = __resolveDbgPath();',
+        'function __DBG(msg) {',
+        '  const line = new Date().toISOString() + " pid=" + process.pid + " " + msg + "\\n";',
+        '  try { process.stderr.write("[PIISH-DBG] " + line); } catch (_) {}',
+        '  if (__DBG_PATH) { try { __dbg_fs.appendFileSync(__DBG_PATH, line); } catch (_) {} }',
+        '}',
+        '__DBG("STAGE-0 dbg-path=" + (__DBG_PATH || "<null-no-writable-dir>") + " home=" + __early_os.homedir() + " tmpdir=" + (process.env.TMPDIR || process.env.TEMP || "<unset>"));',
+        '__DBG("STAGE-1 banner-top node=" + process.versions.node + " platform=" + process.platform + " arch=" + process.arch + " electron=" + (process.versions.electron || "<none>"));',
         'function __earlyDataDir() {',
         '  const pluginData = process.env.CLAUDE_PLUGIN_DATA;',
         '  if (pluginData && pluginData.length > 0) return pluginData;',
-        '  return __early_path.join(__early_os.homedir(), ".pii_shield");',
+        '  return __dbg_path.join(__early_os.homedir(), ".pii_shield");',
         '}',
         'function __earlyLog(msg) {',
+        '  try { process.stderr.write(msg + "\\n"); } catch (_) {}',
         '  try {',
-        '    const dir = __early_path.join(__earlyDataDir(), "audit");',
-        '    __early_fs.mkdirSync(dir, { recursive: true });',
-        '    __early_fs.appendFileSync(__early_path.join(dir, "ner_init.log"), new Date().toISOString() + " " + msg + "\\n");',
+        '    const dir = __dbg_path.join(__earlyDataDir(), "audit");',
+        '    __dbg_fs.mkdirSync(dir, { recursive: true });',
+        '    __dbg_fs.appendFileSync(__dbg_path.join(dir, "ner_init.log"), new Date().toISOString() + " " + msg + "\\n");',
         '  } catch (_) {}',
-        '  try { console.error(msg); } catch (_) {}',
         '}',
-        'process.on("uncaughtException", (err) => { __earlyLog("[UNCAUGHT] " + (err && err.stack || err)); });',
-        'process.on("unhandledRejection", (reason) => { __earlyLog("[UNHANDLED] " + (reason && reason.stack || reason)); });',
+        'process.on("uncaughtException", (err) => { __DBG("UNCAUGHT " + (err && err.stack || err)); __earlyLog("[UNCAUGHT] " + (err && err.stack || err)); });',
+        'process.on("unhandledRejection", (reason) => { __DBG("UNHANDLED " + (reason && reason.stack || reason)); __earlyLog("[UNHANDLED] " + (reason && reason.stack || reason)); });',
+        'process.on("exit", (code) => __DBG("EXIT code=" + code));',
+        'process.on("beforeExit", (code) => __DBG("BEFORE-EXIT code=" + code));',
+        '["SIGTERM","SIGINT","SIGHUP","SIGPIPE","SIGUSR2"].forEach(function(sig) { try { process.on(sig, function() { __DBG("SIGNAL " + sig); }); } catch (_) {} });',
+        'try { setTimeout(function() { __DBG("HEARTBEAT 3s uptime=" + process.uptime().toFixed(2)); }, 3000).unref(); } catch (_) {}',
+        'try { setTimeout(function() { __DBG("HEARTBEAT 15s uptime=" + process.uptime().toFixed(2)); }, 15000).unref(); } catch (_) {}',
         'globalThis.__earlyLog = __earlyLog;',
+        'globalThis.__DBG = __DBG;',
+        '__DBG("STAGE-2 handlers ok");',
         '__earlyLog("[init] node=" + process.version + " platform=" + process.platform + " pid=" + process.pid);',
         '__earlyLog("[init] cwd=" + process.cwd() + " CLAUDE_PLUGIN_DATA=" + (process.env.CLAUDE_PLUGIN_DATA || "<unset>"));',
-        '__earlyLog("[init] banner ok, entering bundle");',
+        '__DBG("STAGE-3 banner done, entering bundle");',
       ].join("\n"),
+    },
+    footer: {
+      js: 'try { (globalThis.__DBG || function(){})("STAGE-99 bundle top-level eval done"); } catch (_) {}',
     },
   });
   console.log("   ✓ dist/server.bundle.mjs");
@@ -221,13 +281,36 @@ async function build() {
 
   const mcpbOut = path.join(OUT_DIR, MCPB_NAME);
   await fsp.rm(mcpbOut, { force: true });
-  const cmd = process.platform === "win32" ? "mcpb.cmd" : "mcpb";
-  const result = spawnSync(cmd, ["pack", stageDir, mcpbOut], { stdio: "inherit", shell: true });
+  const result = runMcpb(["pack", stageDir, mcpbOut]);
   if (result.status !== 0) {
     throw new Error(`mcpb pack failed with exit code ${result.status}`);
   }
   const mcpbSizeMB = (fs.statSync(mcpbOut).size / 1024 / 1024).toFixed(2);
   console.log(`\n✓ MCPB created: ${mcpbOut} (${mcpbSizeMB} MB)`);
+
+  // Step 5: validate the staged manifest. Catches schema regressions
+  // (`platform_overrides` typos, missing `mcp_config`, bad `runtimes`, etc.)
+  // before users hit them at install time.
+  console.log("\n5. Validating manifest...");
+  const validateResult = runMcpb(["validate", path.join(stageDir, "manifest.json")]);
+  if (validateResult.status !== 0) {
+    throw new Error(`mcpb validate failed with exit code ${validateResult.status}`);
+  }
+  console.log("   ✓ manifest valid");
+
+  // Step 6: assemble testkit (loose dist/testkit/ + single-file ZIP with
+  // preserved Unix permissions on .command/.sh). Single ZIP is what we send
+  // to testers.
+  if (SKIP_TESTKIT) {
+    console.log("\n6. Building testkit... skipped (--skip-testkit)");
+    return;
+  }
+  console.log("\n6. Building testkit...");
+  const nodeBin = process.execPath;
+  const testkitResult = spawnSync(nodeBin, [path.join(__dirname, "build-testkit.mjs")], { stdio: "inherit" });
+  if (testkitResult.status !== 0) {
+    throw new Error(`build-testkit.mjs failed with exit code ${testkitResult.status}`);
+  }
 }
 
 build().catch((err) => {

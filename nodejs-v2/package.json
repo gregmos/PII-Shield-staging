@@ -1,6 +1,6 @@
 {
   "name": "pii-shield-v2",
-  "version": "2.0.0",
+  "version": "2.0.2",
   "type": "module",
   "description": "PII Shield MCP Server v2 — anonymize PII in legal documents (Node.js, MCP Apps UI, pure-JS DOCX)",
   "main": "dist/server.bundle.mjs",
@@ -8,6 +8,8 @@
     "build": "node esbuild.config.mjs",
     "build:ui": "vite build",
     "build:plugin": "node plugin/build-plugin.mjs",
+    "build:plugin:mac": "node plugin/build-plugin.mjs --skip-testkit && node plugin/build-mac-binary.mjs && node plugin/build-testkit.mjs",
+    "build:testkit": "node plugin/build-testkit.mjs",
     "start": "node dist/server.bundle.mjs",
     "dev": "npx tsx src/index.ts",
     "test": "vitest run",
@@ -18,12 +20,14 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@modelcontextprotocol/ext-apps": "^1.6.0",
     "@ansonlai/docx-redline-js": "^0.1.4",
-    "@xenova/transformers": "^2.17.0",
+    "@xenova/transformers": "2.17.2",
     "@xmldom/xmldom": "^0.9.0",
     "docx": "^8.0.0",
     "jszip": "^3.10.1",
-    "gliner": "^0.0.19",
-    "onnxruntime-node": "^1.17.0",
+    "gliner": "0.0.19",
+    "onnxruntime-common": "1.22.0",
+    "onnxruntime-node": "1.22.0",
+    "onnxruntime-web": "1.22.0",
     "pdf.js-extract": "^0.2.1"
   },
   "devDependencies": {
@@ -37,7 +41,9 @@
     "zod": "^3.23.0"
   },
   "overrides": {
-    "onnxruntime-node": "$onnxruntime-node"
+    "onnxruntime-node": "$onnxruntime-node",
+    "onnxruntime-common": "1.22.0",
+    "onnxruntime-web": "1.22.0"
   },
   "engines": {
     "node": ">=18"

@@ -36,9 +36,12 @@ Prefer to read the script first? Download `install-model.ps1` or `install-model.
 - **macOS**: `xattr -d com.apple.quarantine install-model.sh && chmod +x install-model.sh && ./install-model.sh`
 - **Linux**: `chmod +x install-model.sh && ./install-model.sh`
 
-### Step 2 — install the plugin (~1 MB, instant)
+### Step 2 — install the plugin
 
-Download `pii-shield-v2.0.0.mcpb` from the [GitHub Release page](https://github.com/grigorii-moskalev/pii-shield/releases) and drag-drop it into Claude Desktop (Settings → Extensions).
+Download the package for your OS from the [GitHub Release page](https://github.com/grigorii-moskalev/pii-shield/releases) and drag-drop it into Claude Desktop (Settings → Extensions).
+
+- **Windows / legacy hosts**: `pii-shield-v2.0.2.mcpb` (thin Node MCPB).
+- **macOS**: `pii-shield-v2.0.2-darwin-universal.mcpb` (bundles Node.js so it avoids Claude Desktop's built-in Node launch path).
 
 ### Step 3 — use it
 
@@ -51,7 +54,7 @@ PII Shield keeps data in two separate directories by design:
 | Path | What lives here | Wiped on `/plugin remove`? |
 |---|---|---|
 | `~/.pii_shield/models/` | GLiNER model (634 MB ONNX + tokenizer files) | **No** — manual deletion only |
-| `~/.pii_shield/deps/`   | Runtime npm deps (onnxruntime-node, transformers, gliner; ~150 MB) | **No** |
+| `~/.pii_shield/deps/installs/<stamp>/` | Runtime npm deps (onnxruntime-node, transformers, gliner; versioned install roots under `~/.pii_shield/deps/`) | **No** |
 | `~/.pii_shield/audit/`  | Append-only audit logs (proves PII never left the machine) | **No** |
 | `~/.pii-shield/mappings/` *(dash, note!)* | Session mappings (placeholder ↔ real PII), per session | **No** — so your cases survive plugin upgrades |
 
@@ -60,6 +63,12 @@ Both directories survive `/plugin remove`, so re-installing the extension never 
 Override either via env vars: `PII_SHIELD_MODELS_DIR` (model) and `PII_SHIELD_MAPPINGS_DIR` (mappings). Or set "GLiNER model directory" in Claude Desktop → Extensions → PII Shield → Settings.
 
 ## Troubleshooting
+
+### macOS: server immediately disconnects after install ("transport closed unexpectedly")
+
+Install `pii-shield-v2.0.2-darwin-universal.mcpb` instead of the thin `pii-shield-v2.0.2.mcpb`. The macOS package runs as `server.type="binary"` with bundled Node.js, avoiding Claude Desktop's built-in Node launch path that can close immediately after `initialize` on Tahoe-era builds.
+
+If still failing on a recent Claude Desktop, check `/tmp/piish-banner-debug.log` (macOS/Linux) or `%TEMP%\piish-banner-debug.log` (Windows). Each banner stage logs there even when stderr is dropped — share the file when reporting.
 
 ### "PII Shield needs its GLiNER model"
 
@@ -88,6 +97,10 @@ xattr -d com.apple.quarantine install-model.sh
 chmod +x install-model.sh
 ./install-model.sh
 ```
+
+### First-run npm install is still running
+
+The first PII Shield run installs `onnxruntime-node` + `@xenova/transformers` + `gliner` into a versioned root under `~/.pii_shield/deps/installs/` (~600 MB). This build uses deterministic `npm ci --ignore-scripts`, so there is no sharp postinstall download anymore. If it still fails, check `~/.pii_shield/audit/ner_init.log` — it now logs the exact resolved `onnxruntime-node`, `onnxruntime-common`, and `onnxruntime-web` paths for root / transformers / gliner.
 
 ### Corporate firewall blocks HuggingFace
 
