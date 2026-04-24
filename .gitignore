@@ -1,16 +1,4 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-build/
-*.egg
-
-# Virtual environments
-.venv/
-.test_venv/
-venv/
-
-# IDE
+# IDE / editor
 .vscode/
 .idea/
 *.swp
@@ -21,14 +9,28 @@ venv/
 Thumbs.db
 desktop.ini
 
-# Claude Code
+# Claude Code workspace metadata
 .claude/
 
-# Test artifacts
+# Test / tool scratch output
 *.output
+*.bak
+*.tmp
 
-# Local testing app (not for distribution)
-nodejs/src/local-app/
+# Root-level dist/ is legacy v1.x output — never committed.
+# Product build artifacts live under nodejs-v2/dist/ and that subtree has
+# its own .gitignore.
+dist/
 
-# Old versions
-pii-shield-v5.3.*.mcpb
+# Out-of-scope sibling projects / scratch dirs that occasionally appear
+# under this worktree during development
+apps-tester/
+host-bridge-probe/
+review-flow-tester/
+scratch/
+pii-shield-diag/
+pii-shield-diag.zip
+pii-shield-plugin-test/
+pii-shield-plugin-test.zip
+MCP.mcpb
+manifest.json.bak

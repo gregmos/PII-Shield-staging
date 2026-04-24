@@ -1,4 +1,4 @@
-name: Tests
+name: CI
 
 on:
   push:
@@ -7,33 +7,35 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  build:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.10", "3.12"]
-
+        node: ["18", "20"]
+    defaults:
+      run:
+        working-directory: nodejs-v2
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - uses: actions/setup-node@v4
         with:
-          python-version: ${{ matrix.python-version }}
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: nodejs-v2/package-lock.json
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest
-          pip install "mcp[cli]>=1.0.0" "presidio-analyzer>=2.2.355" "spacy>=3.7.0" "python-docx>=1.1.0" "cryptography>=42.0.0" "numpy>=1.24.0" "torch>=2.0.0" "gliner>=0.2.7"
-          python -m spacy download en_core_web_sm
+      # --ignore-scripts keeps sharp's postinstall native build from failing
+      # on CI runners that lack libvips — text-only NER doesn't use sharp
+      # and the runtime bundle ships a shim that intercepts sharp loads
+      # anyway. --legacy-peer-deps tolerates the peer-dep drift in
+      # @xenova/transformers@2.17.2 + onnxruntime-* 1.22.0.
+      - name: Install dev deps
+        run: npm ci --ignore-scripts --legacy-peer-deps
 
-      - name: Download GLiNER model
-        run: |
-          python -c "from gliner import GLiNER; GLiNER.from_pretrained('knowledgator/gliner-pii-base-v1.0')"
+      - name: Type-check
+        run: node node_modules/typescript/bin/tsc --noEmit
 
-      - name: Run tests
-        run: |
-          pytest tests/ -v --tb=short
+      - name: MCP protocol smoke
+        run: node scripts/smoke-protocol.mjs
