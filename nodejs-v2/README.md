@@ -1,117 +1,112 @@
-# PII Shield v2 — Claude Desktop Extension
+# PII Shield v2 — developer notes
 
-MCP server that **anonymizes PII in documents before Claude reads them** and restores the real data after analysis. PII never leaves your machine.
+Developer-facing docs for the Node.js MCP server that lives under `nodejs-v2/`. For end-user install instructions (download the `.mcpb`, run install-model, use the skill) see the [repo root README](../README.md).
 
-Key features:
+## What's here
 
-- **Legal-domain NER** via GLiNER (ONNX, 634 MB) — detects parties, contacts, addresses, emails, IDs, registration numbers, etc.
-- **Human-in-the-Loop review** in an in-chat panel (no browser) — you approve every placeholder before Claude touches the file
-- **`.docx` (with tracked changes / redline) + `.pdf` + `.txt` / `.md` / `.csv`**
-- **Cross-session persistence**: each anonymized `.docx` carries its `session_id` in its metadata, so you can deanonymize it in a new chat weeks later without remembering anything
-- **Multi-file sessions**: anonymize N documents under one session; identical entities get the same placeholder everywhere (write your own memo mixing placeholders, one command restores PII in the whole thing)
-- **Team handoff**: export an encrypted `.pii-session` archive for a colleague, they import and restore on their machine
-- Pure Node.js, no Python dependency
+| Path | What it is |
+|---|---|
+| `src/index.ts` | MCP tool handlers — one function per tool exposed to Claude Desktop. |
+| `src/engine/ner-backend.ts` | GLiNER bootstrap — deps-aware sharp shim, versioned deps cache, ONNX triplet sanity check, deterministic `npm ci --ignore-scripts` install. |
+| `src/engine/ner-deps-lockfile.json` | Embedded lockfile template. Gets written into `~/.pii_shield/deps/installs/<slug>/` so `npm ci` has something deterministic to consume. |
+| `src/docx/`, `src/pdf/`, `src/mapping/`, `src/chunking/` | Document IO + session state. Pure JS, no Python. |
+| `src/audit/`, `src/sidecar/` | Audit log + bootstrap beacon that stays writable even when Claude Desktop drops stderr. |
+| `src/portability/session-archive.ts` | `export_session` / `import_session` round-trip (encrypted `.pii-session` archive). |
+| `plugin/build-plugin.mjs` | Builds the thin Windows/Linux `.mcpb` (step 0 also refreshes `plugin/skills/pii-contract-analyze.zip` from the live source dir). |
+| `plugin/build-mac-binary.mjs` | Builds the darwin-universal `.mcpb` with bundled Node 24.15.0. |
+| `plugin/build-testkit.mjs` | Packages the internal tester bundle (`pii-shield-testkit-*.zip`). NOT public. |
+| `plugin/skills/pii-contract-analyze/` | Skill source (SKILL.md + `references/*.md`). Single source of truth. |
+| `plugin/skills/pii-contract-analyze.zip` | Auto-rebuilt release artefact. Don't hand-edit; run `npm run build:plugin` to refresh. |
+| `scripts/install-model.{ps1,bat,sh,command}` | End-user model installer (downloads `gliner-pii-base-v1.0.zip` from the GitHub release). |
+| `scripts/smoke-protocol.mjs` | MCP protocol round-trip smoke (initialize → tools/list → resources/list → tools/call). |
+| `scripts/smoke-sharp-shim.mjs` | Focused clean-install smoke for the deps-aware sharp Module._load shim. |
+| `ui/` | Vite source for the MCP Apps review iframe. `vite build` produces a single-file `dist/ui/review.html` that esbuild inlines into `dist/server.bundle.mjs`. |
 
-## Install — 3 steps, ~3-5 min total
+## Dev setup
 
-### Step 1 — install the GLiNER model (~634 MB, one-time)
-
-The model is installed separately from the plugin so Claude Desktop's extension install stays instant.
-
-**Windows (PowerShell):**
-```powershell
-iwr https://raw.githubusercontent.com/gregmos/PII-Shield/main/nodejs-v2/scripts/install-model.ps1 | iex
-```
-
-**macOS / Linux (Terminal):**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gregmos/PII-Shield/main/nodejs-v2/scripts/install-model.sh | bash
+# Install exact-pinned dev deps (ignore scripts because sharp's postinstall
+# fails on hosts without libvips — runtime shim intercepts sharp anyway).
+npm ci --ignore-scripts --legacy-peer-deps
+
+# Build the thin .mcpb → dist/pii-shield-v<version>.mcpb
+npm run build:plugin
+
+# Also build the darwin-universal .mcpb (downloads Node 24.15.0 arm64 + x64
+# into dist/.cache/node-runtime/ on first run; cached afterwards)
+npm run build:plugin:mac
+
+# Type check only
+node node_modules/typescript/bin/tsc --noEmit
+
+# Protocol smoke against the latest dist/server.bundle.mjs
+npm run smoke
+
+# Full clean-install smoke: real npm ci in a temp dir + shim intercept assert
+npm run smoke:sharp-shim
 ```
 
-The one-liner downloads a single `gliner-pii-base-v1.0.zip` (~634 MB) from the PII Shield GitHub release and unpacks it into `~/.pii_shield/models/gliner-pii-base-v1.0/` (~2–5 min depending on your connection). No file is saved to disk — that avoids Windows SmartScreen and macOS Gatekeeper prompts.
+`npm run build:plugin` writes three artefacts to `dist/`:
 
-Prefer to read the script first? Download `install-model.ps1` or `install-model.sh` from the [GitHub Release page](https://github.com/gregmos/PII-Shield/releases) (~3 KB, ~30 lines of code) and run it locally:
+- `pii-shield-v<version>-plugin.zip` — legacy `.zip` for non-`.mcpb` hosts
+- `pii-shield-v<version>.mcpb` — the actual MCPB (what you drag into Claude Desktop on Windows/Linux)
+- `pii-shield-testkit-v<version>.zip` — internal tester bundle
 
-- **Windows**: right-click `install-model.ps1` → Properties → Unblock → `powershell -ExecutionPolicy Bypass -File install-model.ps1`
-- **macOS**: `xattr -d com.apple.quarantine install-model.sh && chmod +x install-model.sh && ./install-model.sh`
-- **Linux**: `chmod +x install-model.sh && ./install-model.sh`
+`npm run build:plugin:mac` additionally writes `pii-shield-v<version>-darwin-universal.mcpb` (~82 MB, bundles Node).
 
-### Step 2 — install the plugin
+At release time these build outputs get renamed on upload to OS-clear names (`pii-shield-v2.0.2-windows-linux.mcpb`, `pii-shield-v2.0.2-macos.mcpb`) — release page handles that.
 
-Download the package for your OS from the [GitHub Release page](https://github.com/gregmos/PII-Shield/releases) and drag-drop it into Claude Desktop (Settings → Extensions).
+## Runtime data layout
 
-- **Windows / legacy hosts**: `pii-shield-v2.0.2.mcpb` (thin Node MCPB).
-- **macOS**: `pii-shield-v2.0.2-darwin-universal.mcpb` (bundles Node.js so it avoids Claude Desktop's built-in Node launch path).
-
-### Step 3 — use it
-
-Upload a contract to Claude Desktop, ask to anonymize it. First tool call will take ~1-2 min (onnxruntime + transformers auto-install, one-time). After that: instant.
-
-## Data locations
-
-PII Shield keeps data in two separate directories by design:
+PII Shield keeps four kinds of data, intentionally in separate paths so `/plugin remove` never loses your sessions or forces a model re-download:
 
 | Path | What lives here | Wiped on `/plugin remove`? |
 |---|---|---|
-| `~/.pii_shield/models/` | GLiNER model (634 MB ONNX + tokenizer files) | **No** — manual deletion only |
-| `~/.pii_shield/deps/installs/<stamp>/` | Runtime npm deps (onnxruntime-node, transformers, gliner; versioned install roots under `~/.pii_shield/deps/`) | **No** |
-| `~/.pii_shield/audit/`  | Append-only audit logs (proves PII never left the machine) | **No** |
-| `~/.pii-shield/mappings/` *(dash, note!)* | Session mappings (placeholder ↔ real PII), per session | **No** — so your cases survive plugin upgrades |
+| `~/.pii_shield/models/` | GLiNER model (634 MB ONNX + 4 tokenizer files) | **No** — manual only |
+| `~/.pii_shield/deps/installs/<slug>/` | Runtime npm deps (`onnxruntime-node`, `@xenova/transformers`, `gliner`, pinned to 1.22.0 / 2.17.2 / 0.0.19). `<slug>` is an ORT-triplet-pin hash so multiple pin sets can coexist. | **No** |
+| `~/.pii_shield/audit/` | Append-only audit logs (`mcp_audit.log`, `ner_init.log`, `pii_shield_server.log`). Used as the "proof that no PII left the machine" artefact. | **No** |
+| `~/.pii-shield/mappings/` *(dash, note)* | Per-session placeholder ↔ real-PII map. | **No** |
 
-Both directories survive `/plugin remove`, so re-installing the extension never loses existing cases or re-downloads the model. The dash vs underscore split is historical (models dir predates mappings dir); both are respected by the runtime.
+Override paths via env vars: `PII_SHIELD_MODELS_DIR`, `PII_SHIELD_MAPPINGS_DIR`. Or set "GLiNER model directory" in Claude Desktop → Extensions → PII Shield → Settings.
 
-Override either via env vars: `PII_SHIELD_MODELS_DIR` (model) and `PII_SHIELD_MAPPINGS_DIR` (mappings). Or set "GLiNER model directory" in Claude Desktop → Extensions → PII Shield → Settings.
+The dash-vs-underscore split (`~/.pii_shield/` vs `~/.pii-shield/mappings/`) is historical — models predates mappings. Both are respected by the runtime.
 
-## Troubleshooting
+## Model auto-discovery order
 
-### macOS: server immediately disconnects after install ("transport closed unexpectedly")
+If `~/.pii_shield/models/gliner-pii-base-v1.0/` isn't present at startup, `ensureModelFiles()` walks a BFS:
 
-Install `pii-shield-v2.0.2-darwin-universal.mcpb` instead of the thin `pii-shield-v2.0.2.mcpb`. The macOS package runs as `server.type="binary"` with bundled Node.js, avoiding Claude Desktop's built-in Node launch path that can close immediately after `initialize` on Tahoe-era builds.
+1. `models_path` from extension settings
+2. `~/.pii_shield/models/gliner-pii-base-v1.0/` (default install-model target)
+3. `$CLAUDE_PLUGIN_DATA/models/gliner-pii-base-v1.0/` (old fat-bundle dev layout)
+4. `~/Downloads/gliner-pii-base-v1.0/` (if the user hand-moved the folder)
+5. Plugin-relative (next to `server.bundle.mjs`)
 
-If still failing on a recent Claude Desktop, check `/tmp/piish-banner-debug.log` (macOS/Linux) or `%TEMP%\piish-banner-debug.log` (Windows). Each banner stage logs there even when stderr is dropped — share the file when reporting.
+First valid dir wins. If nothing is found the server returns a `needs_setup` envelope — see [root README](../README.md) for the user flow.
 
-### "PII Shield needs its GLiNER model"
+## Dev-facing troubleshooting
 
-You installed the `.mcpb` without running the model installer. Open a terminal and paste the one-liner from Step 1 above. Then ask Claude again — the plugin picks up the model automatically via an auto-BFS across several common locations:
+### First-run `npm ci` hangs or fails
 
-1. Path you set in Extension settings (`models_path`)
-2. `~/.pii_shield/models/gliner-pii-base-v1.0/` (default install path)
-3. `$CLAUDE_PLUGIN_DATA/models/gliner-pii-base-v1.0/` (if you used a pre-thin dev build)
-4. `~/Downloads/gliner-pii-base-v1.0/` (if you manually moved the folder)
-5. Plugin-relative (if the model is sitting next to the `.mcpb`'s `server.bundle.mjs`)
+The first ever NER call runs `npm ci --ignore-scripts` against the embedded lockfile template into `~/.pii_shield/deps/installs/<slug>/`. ~600 MB, 1–2 min. Watch `~/.pii_shield/audit/ner_init.log` — it streams the exact resolved `onnxruntime-node` / `onnxruntime-common` / `onnxruntime-web` paths for root / transformers / gliner at the end, so you can see if any component resolved a wrong copy.
 
-The error envelope Claude shows you also prints the exact paths the server checked — helpful if you extracted the model to an unusual place.
+### ONNX mismatch (`Unsupported model IR version: 9, max supported IR version: 8`)
 
-### "Windows protected your PC" when running the downloaded `install-model.ps1`
+A stale pre-1.22.0 `onnxruntime-node` got resolved somewhere. Delete `~/.pii_shield/deps/` and retry — the versioned-install layout will refuse to reuse a deps root that fails the triplet sanity check on init, so subsequent runs self-heal.
 
-Expected for an unsigned script downloaded via browser (Mark-of-the-Web quarantine). Either:
+### `Cannot find module '../build/Release/sharp-*.node'`
 
-- Use the one-liner (`iwr ... | iex`) — no file is written to disk, no quarantine, no warning
-- Or: right-click the file → Properties → Unblock → OK, then run with `-ExecutionPolicy Bypass -File`
+Means the sharp shim isn't intercepting correctly. Text-only NER doesn't need sharp — the shim in `ner-backend.ts:installSharpShimForDeps` intercepts bare `require("sharp")`, the absolute sharp entry path, and nested requires inside sharp's own root. Run `npm run smoke:sharp-shim` to reproduce and assert the shim fires at least once.
 
-### macOS: "install-model.sh cannot be opened because it is from an unidentified developer"
+### macOS: server immediately disconnects after install
 
-Same deal — the one-liner (`curl | bash`) avoids this. If you prefer the file:
-```bash
-xattr -d com.apple.quarantine install-model.sh
-chmod +x install-model.sh
-./install-model.sh
-```
+Install the `darwin-universal` variant (`pii-shield-v2.0.2-macos.mcpb` on the release page). Thin `.mcpb` hits Claude Desktop's built-in Node which closes the transport after `initialize` on Tahoe-era builds. The darwin variant ships its own Node and runs via `server.type="binary"` + `launch.sh`.
 
-### First-run npm install is still running
+Debug log lives at `/tmp/piish-banner-debug.log` (Unix) or `%TEMP%\piish-banner-debug.log` (Windows) — written from the very first instruction of `server.bundle.mjs` so it survives the transport dying.
 
-The first PII Shield run installs `onnxruntime-node` + `@xenova/transformers` + `gliner` into a versioned root under `~/.pii_shield/deps/installs/` (~600 MB). This build uses deterministic `npm ci --ignore-scripts`, so there is no sharp postinstall download anymore. If it still fails, check `~/.pii_shield/audit/ner_init.log` — it now logs the exact resolved `onnxruntime-node`, `onnxruntime-common`, and `onnxruntime-web` paths for root / transformers / gliner.
+### Skill references don't load
 
-### Corporate firewall blocks github.com
-
-Download `gliner-pii-base-v1.0.zip` manually from the [GitHub release page](https://github.com/gregmos/PII-Shield/releases) on a machine with access (or an internal mirror), unzip into `~/.pii_shield/models/gliner-pii-base-v1.0/` — the zip contains `model.onnx`, `tokenizer.json`, `tokenizer_config.json`, `special_tokens_map.json`, `gliner_config.json` at the root.
-
-If you cannot reach GitHub at all, the same five files are also mirrored upstream at `https://huggingface.co/knowledgator/gliner-pii-base-v1.0/` — grab them individually and drop them into the same target dir.
-
-### Had a pre-thin "fat" dev build? You don't need to re-download
-
-If you were a developer testing an older build that bundled the model inside the `.mcpb`, the model is likely in your `$CLAUDE_PLUGIN_DATA/models/` or in the plugin staging dir next to the old `server.bundle.mjs`. The runtime auto-BFS finds it there too (candidate #3 or #5). You can leave it or move it to `~/.pii_shield/models/` for cleanliness.
+If `pii-contract-analyze.zip` has `references/references/*.md` (double-nested) instead of `references/*.md`, the skill is broken — SKILL.md reads by the flat path. Rebuild via `npm run build:plugin` (step 0 regenerates the zip from source).
 
 ## License
 
-MIT. See `LICENSE`.
+MIT. See `../LICENSE`.
