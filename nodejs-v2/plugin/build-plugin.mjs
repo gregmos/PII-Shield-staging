@@ -18,10 +18,11 @@
  * **Why the .mcpb is thin (no model bundled):**
  * The 634 MB GLiNER model is installed separately by the end user via
  * `scripts/install-model.ps1` (Windows) or `scripts/install-model.sh`
- * (macOS/Linux), which downloads the model from HuggingFace into
- * `~/.pii_shield/models/gliner-pii-base-v1.0/`. This keeps the .mcpb small
- * (fast Claude Desktop install), avoids the 90 sec silent preview window,
- * and decouples model updates from code releases.
+ * (macOS/Linux), which pulls a single `gliner-pii-base-v1.0.zip` from the
+ * PII Shield GitHub release and unpacks it into `~/.pii_shield/models/
+ * gliner-pii-base-v1.0/`. This keeps the .mcpb small (fast Claude Desktop
+ * install), avoids the 90 sec silent preview window, and decouples model
+ * updates from code releases.
  *
  * At runtime `ensureModelFiles()` in `src/engine/ner-backend.ts` does an
  * auto-BFS over common locations (settings override → `~/.pii_shield/models/`

@@ -15,7 +15,7 @@ Contents:
 The model is downloaded separately from the MCP server (keeps the bundle small; model survives  MCP server reinstalls).
 
 ### Windows
-Double-click **`install-model.bat`**. Opens a PowerShell window, downloads 5 files from Hugging Face, prints "Press any key" when done.
+Double-click **`install-model.bat`**. Opens a PowerShell window, downloads `gliner-pii-base-v1.0.zip` (~634 MB) from the PII Shield GitHub release and unpacks it, prints "Press any key" when done.
 
 *SmartScreen warning?* "More info" → "Run anyway". Once.
 

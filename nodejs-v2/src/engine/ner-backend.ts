@@ -6,8 +6,9 @@
  * The model is **not** bundled in the .mcpb (keeps the plugin <2 MB for fast
  * install). End users run `scripts/install-model.ps1` (Windows) or
  * `scripts/install-model.sh` (macOS/Linux) before installing the .mcpb ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â these
- * scripts download the model from HuggingFace into `~/.pii_shield/models/
- * gliner-pii-base-v1.0/`. See `ensureModelFiles` below for the runtime
+ * scripts pull `gliner-pii-base-v1.0.zip` from the PII Shield GitHub
+ * release and unpack it into `~/.pii_shield/models/gliner-pii-base-v1.0/`.
+ * See `ensureModelFiles` below for the runtime
  * auto-BFS that finds the model across several common locations, and the
  * `NEEDS_SETUP` envelope in `src/index.ts:handleListEntities` for the
  * user-facing error path when the model isn't in place.

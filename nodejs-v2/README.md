@@ -28,7 +28,7 @@ iwr https://raw.githubusercontent.com/gregmos/PII-Shield/main/nodejs-v2/scripts/
 curl -fsSL https://raw.githubusercontent.com/gregmos/PII-Shield/main/nodejs-v2/scripts/install-model.sh | bash
 ```
 
-The one-liner downloads 5 files from HuggingFace into `~/.pii_shield/models/gliner-pii-base-v1.0/` (~2-5 min depending on your connection). No file is saved to disk — that avoids Windows SmartScreen and macOS Gatekeeper prompts.
+The one-liner downloads a single `gliner-pii-base-v1.0.zip` (~634 MB) from the PII Shield GitHub release and unpacks it into `~/.pii_shield/models/gliner-pii-base-v1.0/` (~2–5 min depending on your connection). No file is saved to disk — that avoids Windows SmartScreen and macOS Gatekeeper prompts.
 
 Prefer to read the script first? Download `install-model.ps1` or `install-model.sh` from the [GitHub Release page](https://github.com/gregmos/PII-Shield/releases) (~3 KB, ~30 lines of code) and run it locally:
 
@@ -102,12 +102,11 @@ chmod +x install-model.sh
 
 The first PII Shield run installs `onnxruntime-node` + `@xenova/transformers` + `gliner` into a versioned root under `~/.pii_shield/deps/installs/` (~600 MB). This build uses deterministic `npm ci --ignore-scripts`, so there is no sharp postinstall download anymore. If it still fails, check `~/.pii_shield/audit/ner_init.log` — it now logs the exact resolved `onnxruntime-node`, `onnxruntime-common`, and `onnxruntime-web` paths for root / transformers / gliner.
 
-### Corporate firewall blocks HuggingFace
+### Corporate firewall blocks github.com
 
-Download the five files manually from a machine with access (or an internal mirror), place them in `~/.pii_shield/models/gliner-pii-base-v1.0/`:
+Download `gliner-pii-base-v1.0.zip` manually from the [GitHub release page](https://github.com/gregmos/PII-Shield/releases) on a machine with access (or an internal mirror), unzip into `~/.pii_shield/models/gliner-pii-base-v1.0/` — the zip contains `model.onnx`, `tokenizer.json`, `tokenizer_config.json`, `special_tokens_map.json`, `gliner_config.json` at the root.
 
-- `model.onnx` (~634 MB) from `https://huggingface.co/knowledgator/gliner-pii-base-v1.0/resolve/main/onnx/model.onnx`
-- `tokenizer.json` / `tokenizer_config.json` / `special_tokens_map.json` / `gliner_config.json` from `https://huggingface.co/knowledgator/gliner-pii-base-v1.0/resolve/main/<file>`
+If you cannot reach GitHub at all, the same five files are also mirrored upstream at `https://huggingface.co/knowledgator/gliner-pii-base-v1.0/` — grab them individually and drop them into the same target dir.
 
 ### Had a pre-thin "fat" dev build? You don't need to re-download
 

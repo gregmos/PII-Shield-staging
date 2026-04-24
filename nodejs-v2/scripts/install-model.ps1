@@ -1,7 +1,7 @@
 # PII Shield v2 - GLiNER model installer (Windows PowerShell)
 #
-# Downloads the GLiNER PII model (~634 MB) from HuggingFace into
-# $HOME\.pii_shield\models\gliner-pii-base-v1.0\ so the PII Shield .mcpb
+# Downloads the GLiNER PII model (~634 MB) from the PII Shield GitHub release
+# into $HOME\.pii_shield\models\gliner-pii-base-v1.0\ so the PII Shield .mcpb
 # plugin can find it at runtime.
 #
 # One-liner usage (recommended - no file left on disk):
@@ -12,8 +12,9 @@
 #   OR: right-click install-model.ps1 -> Properties -> Unblock -> OK
 #       then: powershell -ExecutionPolicy Bypass -File install-model.ps1
 #
-# Idempotent: safe to re-run. Existing files are re-downloaded (atomic
-# overwrite) so partial failures heal on retry.
+# Idempotent: safe to re-run. The download goes to a temp file and is
+# expanded over the target dir with -Force, so partial failures heal on
+# retry.
 #
 # IMPORTANT FOR MAINTAINERS: this file must stay pure ASCII (no em-dashes,
 # no smart quotes). Windows PowerShell 5.1 reads .ps1 files via the system
@@ -24,19 +25,9 @@
 $ErrorActionPreference = "Stop"
 
 $MODEL_SLUG = "gliner-pii-base-v1.0"
+$MODEL_VERSION = "v2.0.2"
 $TARGET = Join-Path $HOME ".pii_shield\models\$MODEL_SLUG"
-$HF_BASE = "https://huggingface.co/knowledgator/$MODEL_SLUG/resolve/main"
-
-# Array items must be comma-separated in Windows PowerShell 5.1 - without
-# the commas the parser treats adjacent @{...} blocks as a single compound
-# expression and the closing ')' below is mis-attributed.
-$FILES = @(
-    @{ url = "onnx/model.onnx";         name = "model.onnx" },
-    @{ url = "tokenizer.json";          name = "tokenizer.json" },
-    @{ url = "tokenizer_config.json";   name = "tokenizer_config.json" },
-    @{ url = "special_tokens_map.json"; name = "special_tokens_map.json" },
-    @{ url = "gliner_config.json";      name = "gliner_config.json" }
-)
+$MODEL_ZIP_URL = "https://github.com/gregmos/PII-Shield/releases/download/$MODEL_VERSION/$MODEL_SLUG.zip"
 
 # Custom downloader using System.Net.Http.HttpClient. Built-in
 # Invoke-WebRequest in Windows PowerShell 5.1 redraws its progress bar by
@@ -138,26 +129,44 @@ function Download-WithProgress {
 }
 
 Write-Host ""
-Write-Host "PII Shield - installing GLiNER model (~634 MB total)"
+Write-Host "PII Shield - installing GLiNER model (~634 MB)"
+Write-Host "  Source: $MODEL_ZIP_URL"
 Write-Host "  Target: $TARGET"
 Write-Host ""
 
 New-Item -ItemType Directory -Force -Path $TARGET | Out-Null
 
+$tempZip = Join-Path $env:TEMP "pii-shield-$MODEL_SLUG-$([guid]::NewGuid().ToString('N').Substring(0,8)).zip"
+
 $overallStart = Get-Date
-foreach ($f in $FILES) {
-    $dest = Join-Path $TARGET $f.name
-    Download-WithProgress -Uri "$HF_BASE/$($f.url)" -OutFile $dest -DisplayName $f.name
+try {
+    Write-Host "1/2 Downloading $MODEL_SLUG.zip..."
+    Download-WithProgress -Uri $MODEL_ZIP_URL -OutFile $tempZip -DisplayName "$MODEL_SLUG.zip"
+
+    Write-Host ""
+    Write-Host "2/2 Unpacking into $TARGET..."
+    # Expand-Archive is in Microsoft.PowerShell.Archive; shipped with 5.1 by
+    # default. -Force overwrites existing files so re-runs heal cleanly.
+    Expand-Archive -Path $tempZip -DestinationPath $TARGET -Force
+} finally {
+    if (Test-Path $tempZip) { Remove-Item -Force $tempZip }
 }
+
 $overallSec = ((Get-Date) - $overallStart).TotalSeconds
 
 $modelFile = Join-Path $TARGET "model.onnx"
+if (-not (Test-Path $modelFile)) {
+    Write-Host ""
+    Write-Host "ERROR: model.onnx missing after unzip. The release zip might be corrupt." -ForegroundColor Red
+    exit 1
+}
+
 $modelSize = (Get-Item $modelFile).Length
 if ($modelSize -lt 600MB) {
     $mb = [math]::Round($modelSize / 1MB, 1)
     Write-Host ""
     Write-Host "ERROR: model.onnx is only $mb MB, expected >= 600 MB." -ForegroundColor Red
-    Write-Host "The download may have been truncated - re-run this script." -ForegroundColor Red
+    Write-Host "The release asset may have been truncated - re-run this script." -ForegroundColor Red
     exit 1
 }
 
