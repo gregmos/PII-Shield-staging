@@ -84,12 +84,48 @@ function runMcpb(args) {
   return spawnSync("mcpb", args, { stdio: "inherit" });
 }
 
+async function buildSkillZip() {
+  // Rebuild plugin/skills/pii-contract-analyze.zip from the live source dir
+  // on every plugin build. Keeps the release artifact from going stale
+  // silently when the source SKILL.md / references/*.md change.
+  const skillSrcDir = path.join(__dirname, "skills/pii-contract-analyze");
+  const skillZipPath = path.join(__dirname, "skills/pii-contract-analyze.zip");
+  if (!fs.existsSync(skillSrcDir)) {
+    throw new Error(`Skill source dir not found: ${skillSrcDir}`);
+  }
+  const skillZip = new JSZip();
+  const pushTree = (dir, zipPath) => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      const zp = zipPath ? `${zipPath}/${e.name}` : e.name;
+      if (e.isDirectory()) pushTree(full, zp);
+      else if (e.isFile()) skillZip.file(zp, fs.readFileSync(full));
+    }
+  };
+  pushTree(skillSrcDir, "pii-contract-analyze");
+  const buf = await skillZip.generateAsync({
+    type: "nodebuffer",
+    compression: "DEFLATE",
+    compressionOptions: { level: 9 },
+  });
+  await fsp.writeFile(skillZipPath, buf);
+  return { path: skillZipPath, size: buf.length };
+}
+
 async function build() {
   console.log(`=== PII Shield v${VERSION} Plugin Builder ===\n`);
 
+  // Step 0: refresh the prebuilt skill zip from its source dir so the
+  // release artefact never silently lags the canonical SKILL.md.
+  console.log("0. Refreshing skill archive from plugin/skills/pii-contract-analyze/");
+  const skillInfo = await buildSkillZip();
+  const skillKb = (skillInfo.size / 1024).toFixed(1);
+  console.log(`   ✓ ${path.relative(ROOT, skillInfo.path).replace(/\\/g, "/")} (${skillKb} KB)`);
+
   // Step 1a: vite build — produce dist/ui/review.html before esbuild so the
   // .html text loader can pick it up.
-  console.log("1a. vite build → dist/ui/review.html");
+  console.log("\n1a. vite build → dist/ui/review.html");
   const uiOut = path.join(DIST, "ui");
   await fsp.mkdir(uiOut, { recursive: true });
   const viteCmd = process.platform === "win32" ? "npx.cmd" : "npx";
@@ -240,14 +276,13 @@ async function build() {
     console.log(`   ✓ commands/ (slash commands)`);
   }
 
+  // The skill is the canonical source of truth at
+  // `plugin/skills/pii-contract-analyze/` (flat `references/*.md` layout).
+  // The prebuilt `plugin/skills/pii-contract-analyze.zip` is refreshed from
+  // that source in step 0 below before this point.
   const skillDir = path.join(__dirname, "skills/pii-contract-analyze");
   if (fs.existsSync(skillDir)) {
     addDirToZip(zip, "skills/pii-contract-analyze", skillDir);
-  } else {
-    const rootSkillDir = path.join(ROOT, "..", "pii-contract-analyze");
-    if (fs.existsSync(rootSkillDir)) {
-      addDirToZip(zip, "skills/pii-contract-analyze", rootSkillDir);
-    }
   }
 
   console.log("   ⊘ models/ (not bundled; user installs via install-model script)");

@@ -201,24 +201,25 @@ npm run smoke:sharp-shim
 
 ```
 PII-Shield/
-├── nodejs-v2/                           # The product
+├── nodejs-v2/                                        # The product
 │   ├── src/
-│   │   ├── index.ts                     # MCP tool handlers
-│   │   ├── engine/ner-backend.ts        # GLiNER + ONNX runtime boot
-│   │   ├── docx/ pdf/ mapping/ audit/   # Document pipelines
-│   │   └── portability/                 # session export/import
+│   │   ├── index.ts                                  # MCP tool handlers
+│   │   ├── engine/ner-backend.ts                     # GLiNER + ONNX runtime boot
+│   │   ├── docx/ pdf/ mapping/ audit/                # Document pipelines
+│   │   └── portability/                              # session export/import
 │   ├── plugin/
-│   │   ├── build-plugin.mjs             # thin .mcpb builder
-│   │   ├── build-mac-binary.mjs         # darwin-universal .mcpb builder (bundles Node 24.15.0)
-│   │   └── skills/pii-contract-analyze.zip
+│   │   ├── build-plugin.mjs                          # thin .mcpb builder
+│   │   ├── build-mac-binary.mjs                      # darwin-universal .mcpb builder (bundles Node 24.15.0)
+│   │   └── skills/
+│   │       ├── pii-contract-analyze/                 # canonical skill source (SKILL.md + references/*.md)
+│   │       └── pii-contract-analyze.zip              # release artefact — auto-rebuilt from the source dir by build-plugin.mjs
 │   ├── scripts/
 │   │   ├── install-model.{ps1,bat,sh,command}
 │   │   ├── smoke-protocol.mjs
 │   │   └── smoke-sharp-shim.mjs
-│   ├── manifest.json                    # MCPB manifest (server.type=node)
+│   ├── manifest.json                                 # MCPB manifest (server.type=node)
 │   └── package.json
-├── pii-contract-analyze/                # Canonical skill reference docs
-├── .github/workflows/test.yml           # Node CI (ubuntu + windows + macos, Node 18 + 20)
+├── .github/workflows/test.yml                        # Node CI (ubuntu + windows + macos, Node 18 + 20)
 ├── LICENSE
 └── README.md
 ```
