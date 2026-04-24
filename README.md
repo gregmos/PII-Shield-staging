@@ -4,8 +4,8 @@
     <strong>Anonymize documents before Claude sees them. Restore real data after analysis.</strong>
   </p>
   <p align="center">
-    <a href="https://github.com/gregmos/PII-Shield-staging/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/gregmos/PII-Shield-staging/test.yml?style=flat-square&label=CI" alt="CI"></a>
-    <a href="https://github.com/gregmos/PII-Shield-staging/releases/latest"><img src="https://img.shields.io/github/v/release/gregmos/PII-Shield-staging?style=flat-square&color=brightgreen" alt="Latest Release"></a>
+    <a href="https://github.com/gregmos/PII-Shield-staging/stargazers"><img src="https://img.shields.io/github/stars/gregmos/PII-Shield-staging?style=flat-square&color=yellow" alt="GitHub Stars"></a>
+    <a href="https://github.com/gregmos/PII-Shield-staging/network/members"><img src="https://img.shields.io/github/forks/gregmos/PII-Shield-staging?style=flat-square" alt="GitHub Forks"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License: MIT"></a>
     <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-18%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js 18+"></a>
   </p>
