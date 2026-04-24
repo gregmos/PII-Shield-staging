@@ -507,9 +507,9 @@ async function handleGetMapping(args: ToolArgs): Promise<string> {
 // VERSION already drives `RELEASE_SCRIPT_BASE`; the raw
 // content URL is intentionally unpinned.
 const INSTALL_SCRIPT_RAW_BASE =
-  "https://raw.githubusercontent.com/gregmos/PII-Shield/main/nodejs-v2/scripts";
+  "https://raw.githubusercontent.com/gregmos/PII-Shield-staging/main/nodejs-v2/scripts";
 const RELEASE_SCRIPT_BASE =
-  `https://github.com/gregmos/PII-Shield/releases/download/v${VERSION}`;
+  `https://github.com/gregmos/PII-Shield-staging/releases/download/v${VERSION}`;
 const MODEL_EXPECTED_PATH = "~/.pii_shield/models/gliner-pii-base-v1.0/";
 
 function renderNeedsSetupEnvelope(): string {

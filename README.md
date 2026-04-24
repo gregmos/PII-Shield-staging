@@ -4,10 +4,10 @@
     <strong>Anonymize documents before Claude sees them. Restore real data after analysis.</strong>
   </p>
   <p align="center">
-    <a href="https://github.com/gregmos/PII-Shield/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/gregmos/PII-Shield/test.yml?style=flat-square&label=CI" alt="CI"></a>
-    <a href="https://github.com/gregmos/PII-Shield/stargazers"><img src="https://img.shields.io/github/stars/gregmos/PII-Shield?style=flat-square&color=yellow" alt="GitHub Stars"></a>
-    <a href="https://github.com/gregmos/PII-Shield/network/members"><img src="https://img.shields.io/github/forks/gregmos/PII-Shield?style=flat-square" alt="GitHub Forks"></a>
-    <a href="https://github.com/gregmos/PII-Shield/releases/latest"><img src="https://img.shields.io/github/v/release/gregmos/PII-Shield?style=flat-square&color=brightgreen" alt="Latest Release"></a>
+    <a href="https://github.com/gregmos/PII-Shield-staging/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/gregmos/PII-Shield-staging/test.yml?style=flat-square&label=CI" alt="CI"></a>
+    <a href="https://github.com/gregmos/PII-Shield-staging/stargazers"><img src="https://img.shields.io/github/stars/gregmos/PII-Shield-staging?style=flat-square&color=yellow" alt="GitHub Stars"></a>
+    <a href="https://github.com/gregmos/PII-Shield-staging/network/members"><img src="https://img.shields.io/github/forks/gregmos/PII-Shield-staging?style=flat-square" alt="GitHub Forks"></a>
+    <a href="https://github.com/gregmos/PII-Shield-staging/releases/latest"><img src="https://img.shields.io/github/v/release/gregmos/PII-Shield-staging?style=flat-square&color=brightgreen" alt="Latest Release"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License: MIT"></a>
     <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-18%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js 18+"></a>
     <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-server-green?style=flat-square" alt="MCP Server"></a>
@@ -63,20 +63,20 @@ Document ──> [PII Shield on your machine] ──> anonymized text ──> [C
 
 **Windows (PowerShell):**
 ```powershell
-iwr https://raw.githubusercontent.com/gregmos/PII-Shield/main/nodejs-v2/scripts/install-model.ps1 | iex
+iwr https://raw.githubusercontent.com/gregmos/PII-Shield-staging/main/nodejs-v2/scripts/install-model.ps1 | iex
 ```
 
 **macOS / Linux (Terminal):**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gregmos/PII-Shield/main/nodejs-v2/scripts/install-model.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gregmos/PII-Shield-staging/main/nodejs-v2/scripts/install-model.sh | bash
 ```
 
-The one-liner downloads [`gliner-pii-base-v1.0.zip`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/gliner-pii-base-v1.0.zip) from the release and unpacks it into `~/.pii_shield/models/gliner-pii-base-v1.0/`. No file left on disk — avoids Windows SmartScreen and macOS Gatekeeper prompts.
+The one-liner downloads [`gliner-pii-base-v1.0.zip`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/gliner-pii-base-v1.0.zip) from the release and unpacks it into `~/.pii_shield/models/gliner-pii-base-v1.0/`. No file left on disk — avoids Windows SmartScreen and macOS Gatekeeper prompts.
 
 Prefer to download the script and inspect it first? Direct links:
 
-- Windows PowerShell — [`install-model.ps1`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/install-model.ps1) · double-click launcher [`install-model.bat`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/install-model.bat)
-- macOS / Linux bash — [`install-model.sh`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/install-model.sh) · macOS double-click launcher [`install-model.command`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/install-model.command)
+- Windows PowerShell — [`install-model.ps1`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/install-model.ps1) · double-click launcher [`install-model.bat`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/install-model.bat)
+- macOS / Linux bash — [`install-model.sh`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/install-model.sh) · macOS double-click launcher [`install-model.command`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/install-model.command)
 
 ### Step 2 — install the plugin
 
@@ -84,14 +84,14 @@ Download the MCPB for your OS and drag-drop it into Claude Desktop (**Settings �
 
 | OS | Download |
 |---|---|
-| **Windows / Linux** | [`pii-shield-v2.0.2-windows-linux.mcpb`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/pii-shield-v2.0.2-windows-linux.mcpb) (~660 KB — uses host Node) |
-| **macOS** (arm64 + x64) | [`pii-shield-v2.0.2-macos.mcpb`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/pii-shield-v2.0.2-macos.mcpb) (~82 MB — bundles Node 24.15.0) |
+| **Windows / Linux** | [`pii-shield-v2.0.2-windows-linux.mcpb`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/pii-shield-v2.0.2-windows-linux.mcpb) (~660 KB — uses host Node) |
+| **macOS** (arm64 + x64) | [`pii-shield-v2.0.2-macos.mcpb`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/pii-shield-v2.0.2-macos.mcpb) (~82 MB — bundles Node 24.15.0) |
 
 On the first call the plugin runs `npm ci --ignore-scripts` to install a pinned, deterministic set of runtime deps (`onnxruntime-node`, `@xenova/transformers`, `gliner`) into `~/.pii_shield/deps/installs/<slug>/`. 2–3 minutes once per machine, instant thereafter.
 
 ### Step 3 — install the skill
 
-Download [`pii-contract-analyze.zip`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/pii-contract-analyze.zip) and unpack into `~/.claude/skills/` (or load it via Cowork). The skill orchestrates the end-to-end contract anonymization + analysis flow — Claude uses it to drive `anonymize_file` → HITL review → analysis → `deanonymize_docx` without you spelling out each step.
+Download [`pii-contract-analyze.zip`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/pii-contract-analyze.zip) and unpack into `~/.claude/skills/` (or load it via Cowork). The skill orchestrates the end-to-end contract anonymization + analysis flow — Claude uses it to drive `anonymize_file` → HITL review → analysis → `deanonymize_docx` without you spelling out each step.
 
 ### Use
 
@@ -298,7 +298,7 @@ PII-Shield/
 
 v1.0.0 was a Python MCP server built on presidio + SpaCy + GLiNER/py, shipped as a `.dxt` bundle. It's still available:
 
-- Tag [`v1.0.0`](https://github.com/gregmos/PII-Shield/releases/tag/v1.0.0) — pinned source.
+- Tag [`v1.0.0`](https://github.com/gregmos/PII-Shield-staging/releases/tag/v1.0.0) — pinned source.
 - Branch `python-legacy` — full tree before the Node.js rewrite.
 
 v2 is a complete architectural reset — Node.js, pure-JS `.docx`, MCP Apps UI, thin `.mcpb` — not a drop-in upgrade.
