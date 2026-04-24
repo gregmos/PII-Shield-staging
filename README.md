@@ -127,6 +127,39 @@ After anonymization, Claude offers a review step rendered directly in Claude Des
 
 No localhost web server, no browser detours — the UI is a Vite single-file iframe served to Claude Desktop as a `ui://` MCP resource.
 
+## Cross-session deanonymize
+
+Every anonymized `.docx` PII Shield writes carries its `session_id` inside Word custom document properties (`docProps/custom.xml`). Three weeks later, in a brand new chat, you can:
+
+1. Drop the anonymized `.docx` into a connected folder — no need to remember the session id, no screenshots of placeholders, nothing.
+2. Ask Claude to "restore PII in this file."
+3. PII Shield's `deanonymize_docx` reads the embedded `session_id`, looks up the mapping in `~/.pii-shield/mappings/`, and writes the restored file next to the input.
+
+Mappings live in `~/.pii-shield/mappings/` (note: dash, not underscore — historical) and survive plugin upgrades and `/plugin remove`. TTL is controlled by `PII_MAPPING_TTL_DAYS` (default: never expire). If a mapping is missing (e.g. you wiped the dir), `deanonymize_docx` returns a clean error rather than silently skipping entities.
+
+Plain `.txt` / `.md` output has no place to embed metadata, so the `deanonymize_text` tool takes the `session_id` explicitly as an argument.
+
+## Multi-file sessions
+
+Anonymize several related documents under one `session_id`:
+
+1. First call: `anonymize_file(path_A)` — server returns `session_id=SID123`.
+2. Second call: `anonymize_file(path_B, session_id="SID123")` — PII Shield extends the same mapping. Identical entities across the two files share the **same placeholder** (`Acme Corp.` becomes `<ORG_1>` in both).
+3. You write a memo in Claude that mixes placeholders from both files.
+4. One `deanonymize_text(..., session_id="SID123")` call on the memo restores PII everywhere.
+
+The `pii-contract-analyze` skill drives this automatically when the user uploads N ≥ 2 files and confirms they belong to one matter. See `plugin/skills/pii-contract-analyze/references/bulk-mode.md` for the full decision tree.
+
+## Team handoff — export / import a session
+
+If a colleague needs to work on the same documents without you re-sharing PII:
+
+1. You call `export_session(session_id, passphrase)` — server packs the mapping + anonymized documents into an encrypted `.pii-session` archive (AES-GCM with a key derived from the passphrase via scrypt).
+2. Send them the `.pii-session` file (email, Slack, thumb drive — it's useless without the passphrase).
+3. They call `import_session(path, passphrase)` on their machine — the mapping lands under their `~/.pii-shield/mappings/` and they can now `deanonymize_docx` locally.
+
+PII never leaves the anonymized documents in transit. The archive format is versioned (`.pii-session` v1), so future schema changes will stay readable.
+
 ## MCP tools
 
 | Tool | Description |
