@@ -65,11 +65,9 @@ PII Shield keeps four kinds of data, intentionally in separate paths so `/plugin
 | `~/.pii_shield/models/` | GLiNER model (634 MB ONNX + 4 tokenizer files) | **No** — manual only |
 | `~/.pii_shield/deps/installs/<slug>/` | Runtime npm deps (`onnxruntime-node`, `@xenova/transformers`, `gliner`, pinned to 1.22.0 / 2.17.2 / 0.0.19). `<slug>` is an ORT-triplet-pin hash so multiple pin sets can coexist. | **No** |
 | `~/.pii_shield/audit/` | Append-only audit logs (`mcp_audit.log`, `ner_init.log`, `pii_shield_server.log`). Used as the "proof that no PII left the machine" artefact. | **No** |
-| `~/.pii-shield/mappings/` *(dash, note)* | Per-session placeholder ↔ real-PII map. | **No** |
+| `~/.pii_shield/mappings/` | Per-session placeholder ↔ real-PII map. 0o700 permissions on POSIX. TTL-based cleanup on startup (`PII_MAPPING_TTL_DAYS`, default 7). | **No** |
 
-Override paths via env vars: `PII_SHIELD_MODELS_DIR`, `PII_SHIELD_MAPPINGS_DIR`. Or set "GLiNER model directory" in Claude Desktop → Extensions → PII Shield → Settings.
-
-The dash-vs-underscore split (`~/.pii_shield/` vs `~/.pii-shield/mappings/`) is historical — models predates mappings. Both are respected by the runtime.
+All four dirs share the same `~/.pii_shield/` root so `/plugin remove` never wipes them — MCPB plugins don't get `CLAUDE_PLUGIN_DATA` from Claude Desktop anyway, so `getDataDir()` resolves to the user-global fallback. `PII_SHIELD_DATA_DIR` overrides the root; `PII_SHIELD_MAPPINGS_DIR` overrides just the mappings sub-path (for tests / enterprise split-disk setups).
 
 ## Model auto-discovery order
 
