@@ -5,22 +5,9 @@
   </p>
   <p align="center">
     <a href="https://github.com/gregmos/PII-Shield-staging/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/gregmos/PII-Shield-staging/test.yml?style=flat-square&label=CI" alt="CI"></a>
-    <a href="https://github.com/gregmos/PII-Shield-staging/stargazers"><img src="https://img.shields.io/github/stars/gregmos/PII-Shield-staging?style=flat-square&color=yellow" alt="GitHub Stars"></a>
-    <a href="https://github.com/gregmos/PII-Shield-staging/network/members"><img src="https://img.shields.io/github/forks/gregmos/PII-Shield-staging?style=flat-square" alt="GitHub Forks"></a>
     <a href="https://github.com/gregmos/PII-Shield-staging/releases/latest"><img src="https://img.shields.io/github/v/release/gregmos/PII-Shield-staging?style=flat-square&color=brightgreen" alt="Latest Release"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License: MIT"></a>
     <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-18%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js 18+"></a>
-    <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-server-green?style=flat-square" alt="MCP Server"></a>
-    <a href="https://claude.ai/download"><img src="https://img.shields.io/badge/Claude-Desktop-cc785c?style=flat-square&logo=anthropic&logoColor=white" alt="Claude Desktop"></a>
-  </p>
-  <p align="center">
-    <img src="https://img.shields.io/badge/Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows">
-    <img src="https://img.shields.io/badge/macOS-000000?style=flat-square&logo=apple&logoColor=white" alt="macOS">
-    <img src="https://img.shields.io/badge/Linux-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux">
-    &nbsp;&nbsp;
-    <img src="https://img.shields.io/badge/GLiNER-NER-orange?style=flat-square" alt="GLiNER">
-    <img src="https://img.shields.io/badge/ONNX-runtime-005CED?style=flat-square&logo=onnx&logoColor=white" alt="ONNX Runtime">
-    <img src="https://img.shields.io/badge/MCPB-package-green?style=flat-square" alt="MCPB package">
   </p>
 </p>
 
