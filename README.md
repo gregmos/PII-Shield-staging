@@ -71,24 +71,27 @@ iwr https://raw.githubusercontent.com/gregmos/PII-Shield/main/nodejs-v2/scripts/
 curl -fsSL https://raw.githubusercontent.com/gregmos/PII-Shield/main/nodejs-v2/scripts/install-model.sh | bash
 ```
 
-The one-liner downloads `gliner-pii-base-v1.0.zip` from the [GitHub release page](https://github.com/gregmos/PII-Shield/releases) and unpacks it into `~/.pii_shield/models/gliner-pii-base-v1.0/`. No file left on disk — avoids Windows SmartScreen and macOS Gatekeeper prompts.
+The one-liner downloads [`gliner-pii-base-v1.0.zip`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/gliner-pii-base-v1.0.zip) from the release and unpacks it into `~/.pii_shield/models/gliner-pii-base-v1.0/`. No file left on disk — avoids Windows SmartScreen and macOS Gatekeeper prompts.
 
-Prefer to download the script and inspect it first? Grab `install-model.ps1` / `install-model.sh` (+ the double-click wrappers `install-model.bat` / `install-model.command`) from the same [release page](https://github.com/gregmos/PII-Shield/releases).
+Prefer to download the script and inspect it first? Direct links:
+
+- Windows PowerShell — [`install-model.ps1`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/install-model.ps1) · double-click launcher [`install-model.bat`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/install-model.bat)
+- macOS / Linux bash — [`install-model.sh`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/install-model.sh) · macOS double-click launcher [`install-model.command`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/install-model.command)
 
 ### Step 2 — install the plugin
 
-Download the MCPB for your OS from the [release page](https://github.com/gregmos/PII-Shield/releases) and drag-drop it into Claude Desktop (**Settings → Extensions**):
+Download the MCPB for your OS and drag-drop it into Claude Desktop (**Settings → Extensions**):
 
 | OS | Download |
 |---|---|
-| **Windows / Linux** | `pii-shield-v2.0.2-windows-linux.mcpb` (~660 KB — uses host Node) |
-| **macOS** (arm64 + x64) | `pii-shield-v2.0.2-macos.mcpb` (~82 MB — bundles Node 24.15.0) |
+| **Windows / Linux** | [`pii-shield-v2.0.2-windows-linux.mcpb`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/pii-shield-v2.0.2-windows-linux.mcpb) (~660 KB — uses host Node) |
+| **macOS** (arm64 + x64) | [`pii-shield-v2.0.2-macos.mcpb`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/pii-shield-v2.0.2-macos.mcpb) (~82 MB — bundles Node 24.15.0) |
 
 On the first call the plugin runs `npm ci --ignore-scripts` to install a pinned, deterministic set of runtime deps (`onnxruntime-node`, `@xenova/transformers`, `gliner`) into `~/.pii_shield/deps/installs/<slug>/`. 2–3 minutes once per machine, instant thereafter.
 
-### Step 3 — install the skill (optional but recommended)
+### Step 3 — install the skill
 
-Grab `pii-contract-analyze.zip` from the same release, unpack into `~/.claude/skills/` (or load it via Cowork). The skill orchestrates end-to-end contract anonymization + analysis; without it the MCP tools still work but you'd be driving them by hand.
+Download [`pii-contract-analyze.zip`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/pii-contract-analyze.zip) and unpack into `~/.claude/skills/` (or load it via Cowork). The skill orchestrates the end-to-end contract anonymization + analysis flow — Claude uses it to drive `anonymize_file` → HITL review → analysis → `deanonymize_docx` without you spelling out each step.
 
 ### Use
 

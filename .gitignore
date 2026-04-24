@@ -22,6 +22,10 @@ desktop.ini
 # its own .gitignore.
 dist/
 
+# Local release-staging dirs — artefacts that get uploaded to GitHub
+# Releases as assets; never tracked.
+release-staging-*/
+
 # Out-of-scope sibling projects / scratch dirs that occasionally appear
 # under this worktree during development
 apps-tester/
