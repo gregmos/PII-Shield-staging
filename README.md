@@ -60,7 +60,7 @@ Pick the `.mcpb` for your OS plus the skill bundle:
 
 ### Step 2 — install the MCP extension
 
-Claude Desktop → **Settings → Extensions → Install extension** → select your `.mcpb`.
+Claude Desktop → **Settings → Extensions → Advanced Settings → Install extension** → select your `.mcpb`.
 
 On the first tool call PII Shield runs `npm ci --ignore-scripts` to install a pinned, deterministic set of runtime deps (`onnxruntime-node`, `@xenova/transformers`, `gliner`) into `~/.pii_shield/deps/installs/<slug>/`. 2–3 minutes once per machine, instant thereafter.
 
