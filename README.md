@@ -48,22 +48,29 @@ Document ──> [PII Shield on your machine] ──> anonymized text ──> [C
 
 **No terminal commands. No model download upfront.** PII Shield handles model install in-chat via a panel that appears the first time you anonymize.
 
-### Step 1 — install the plugin
+### Step 1 — download the artefacts
 
-Download the MCPB for your OS and drag-drop it into Claude Desktop (**Settings → Extensions**):
+Pick the `.mcpb` for your OS plus the skill bundle:
 
-| OS | Download |
-|---|---|
-| **Windows / Linux** | [`pii-shield-v2.0.2-windows-linux.mcpb`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/pii-shield-v2.0.2-windows-linux.mcpb) (~700 KB — uses host Node) |
-| **macOS** (arm64 + x64) | [`pii-shield-v2.0.2-macos.mcpb`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/pii-shield-v2.0.2-macos.mcpb) (~83 MB — bundles Node 24.15.0) |
+| File | What | OS |
+|---|---|---|
+| [`pii-shield-v2.0.2-windows-linux.mcpb`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/pii-shield-v2.0.2-windows-linux.mcpb) | ~700 KB — uses host Node | **Windows / Linux** |
+| [`pii-shield-v2.0.2-macos.mcpb`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/pii-shield-v2.0.2-macos.mcpb) | ~83 MB — bundles Node 24.15.0 | **macOS** (arm64 + x64) |
+| [`pii-contract-analyze.skill`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/pii-contract-analyze.skill) | ~25 KB — contract analysis skill | any |
 
-On the first call the plugin runs `npm ci --ignore-scripts` to install a pinned, deterministic set of runtime deps (`onnxruntime-node`, `@xenova/transformers`, `gliner`) into `~/.pii_shield/deps/installs/<slug>/`. 2–3 minutes once per machine, instant thereafter.
+### Step 2 — install the MCP extension
 
-### Step 2 — install the skill (recommended)
+Claude Desktop → **Settings → Extensions → Install extension** → select your `.mcpb`.
 
-Download [`pii-contract-analyze.zip`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/pii-contract-analyze.zip) and unpack into `~/.claude/skills/` (or load it via Cowork). The skill orchestrates the end-to-end contract anonymization + analysis flow — Claude uses it to drive `anonymize_file` → HITL review → analysis → `deanonymize_docx` without you spelling out each step.
+On the first tool call PII Shield runs `npm ci --ignore-scripts` to install a pinned, deterministic set of runtime deps (`onnxruntime-node`, `@xenova/transformers`, `gliner`) into `~/.pii_shield/deps/installs/<slug>/`. 2–3 minutes once per machine, instant thereafter.
 
-### Step 3 — use it
+### Step 3 — upload the skill
+
+Claude Desktop → **Customize → Skills → + → Upload a skill** → select `pii-contract-analyze.skill`.
+
+The skill orchestrates the end-to-end contract anonymization + analysis flow — Claude uses it to drive `anonymize_file` → HITL review → analysis → `deanonymize_docx` without you spelling out each step.
+
+### Step 4 — use it
 
 1. Start a new conversation in Claude Desktop
 2. Select the **pii-contract-analyze** skill
