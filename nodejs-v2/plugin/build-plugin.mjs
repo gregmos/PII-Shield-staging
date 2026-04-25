@@ -123,29 +123,33 @@ async function build() {
   const skillKb = (skillInfo.size / 1024).toFixed(1);
   console.log(`   ✓ ${path.relative(ROOT, skillInfo.path).replace(/\\/g, "/")} (${skillKb} KB)`);
 
-  // Step 1a: vite build — produce dist/ui/review.html before esbuild so the
-  // .html text loader can pick it up.
-  console.log("\n1a. vite build → dist/ui/review.html");
+  // Step 1a: vite build (twice — review.html + setup.html). Each pass is a
+  // single-file build via INPUT env var (vite.config.ts reads it). esbuild's
+  // text loader picks both up below.
+  console.log("\n1a. vite build → dist/ui/review.html + dist/ui/setup.html");
   const uiOut = path.join(DIST, "ui");
   await fsp.mkdir(uiOut, { recursive: true });
   const viteCmd = process.platform === "win32" ? "npx.cmd" : "npx";
-  const viteResult = spawnSync(viteCmd, ["vite", "build", "--logLevel", "warn"], {
-    cwd: ROOT,
-    stdio: "inherit",
-    shell: true,
-    env: { ...process.env, INPUT: "review.html" },
-  });
-  if (viteResult.status !== 0) {
-    throw new Error(`vite build failed with exit code ${viteResult.status}`);
+
+  for (const entry of ["review.html", "setup.html"]) {
+    const viteResult = spawnSync(viteCmd, ["vite", "build", "--logLevel", "warn"], {
+      cwd: ROOT,
+      stdio: "inherit",
+      shell: true,
+      env: { ...process.env, INPUT: entry },
+    });
+    if (viteResult.status !== 0) {
+      throw new Error(`vite build failed for ${entry} with exit code ${viteResult.status}`);
+    }
+    const builtPath = path.join(uiOut, entry);
+    if (!fs.existsSync(builtPath)) {
+      throw new Error(
+        `vite build finished but ${builtPath} does not exist — check outDir in vite.config.ts`,
+      );
+    }
+    const sizeKb = (fs.statSync(builtPath).size / 1024).toFixed(1);
+    console.log(`   ✓ dist/ui/${entry} (${sizeKb} KB, single-file bundle)`);
   }
-  const uiHtmlPath = path.join(uiOut, "review.html");
-  if (!fs.existsSync(uiHtmlPath)) {
-    throw new Error(
-      `vite build finished but ${uiHtmlPath} does not exist — check outDir in vite.config.ts`,
-    );
-  }
-  const uiHtmlSize = (fs.statSync(uiHtmlPath).size / 1024).toFixed(1);
-  console.log(`   ✓ dist/ui/review.html (${uiHtmlSize} KB, single-file bundle)`);
 
   // Step 1b: esbuild server bundle.
   console.log("\n1b. Building server bundle...");

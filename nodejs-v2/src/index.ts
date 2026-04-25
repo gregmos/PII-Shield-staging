@@ -24,6 +24,17 @@ async function getReviewHtml(): Promise<string> {
   return _reviewHtml as string;
 }
 
+// Same lazy-load pattern for the v2.1 setup-panel iframe. Smaller than the
+// review HTML (~30 KB vs ~150 KB) but the deferred-chunk benefit still applies.
+let _setupHtml: string | null = null;
+async function getSetupHtml(): Promise<string> {
+  if (_setupHtml !== null) return _setupHtml;
+  // @ts-ignore — same esbuild text-loader trick as getReviewHtml.
+  const mod = await import("../dist/ui/setup.html");
+  _setupHtml = (mod as any).default ?? (mod as any);
+  return _setupHtml as string;
+}
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -35,7 +46,18 @@ import { z } from "zod";
 import { VERSION, PATHS, getDataDirSource } from "./utils/config.js";
 import { PIIEngine } from "./engine/pii-engine.js";
 import { SUPPORTED_ENTITIES } from "./engine/entity-types.js";
-import { getNerDiagnostic, getNerError, getNerStats, getNerStatus, getNeedsSetupSearched, forceReinitNer, nerLog, retryNerIfRepairDetected } from "./engine/ner-backend.js";
+import {
+  getNerDiagnostic,
+  getNerError,
+  getNerStats,
+  getNerStatus,
+  getNeedsSetupSearched,
+  forceReinitNer,
+  nerLog,
+  retryNerIfRepairDetected,
+  findDownloadedGlinerZip,
+  extractAndInstallModelZip,
+} from "./engine/ner-backend.js";
 import {
   saveMapping, loadMapping, getMappingSafe, newSessionId,
   latestSessionId, cleanupOldMappings,
@@ -105,6 +127,7 @@ __step("index.ts top-level imports done");
 try { startBeacon(); __step("after startBeacon"); } catch (e) { __step("startBeacon FAILED " + (e instanceof Error ? e.message : String(e))); }
 
 const REVIEW_RESOURCE_URI = "ui://pii-shield/review.html";
+const SETUP_RESOURCE_URI = "ui://pii-shield/setup.html";
 
 // Phase 7b: one-shot flag so the first-run explainer is emitted only on the
 // very first `list_entities` loading response per server process. Subsequent
@@ -513,10 +536,15 @@ const RELEASE_SCRIPT_BASE =
 const MODEL_EXPECTED_PATH = "~/.pii_shield/models/gliner-pii-base-v1.0/";
 
 function renderNeedsSetupEnvelope(): string {
+  // v2.1: primary install path is the in-chat MCP Apps setup panel — Claude
+  // calls `start_model_setup` and the user clicks Download / Install in
+  // the iframe. The terminal one-liners are kept as a documented fallback
+  // for hosts that don't render `ui://` resources.
   const oneLinerWindows =
     `iwr ${INSTALL_SCRIPT_RAW_BASE}/install-model.ps1 | iex`;
   const oneLinerUnix =
     `curl -fsSL ${INSTALL_SCRIPT_RAW_BASE}/install-model.sh | bash`;
+  const modelZipUrl = `${RELEASE_SCRIPT_BASE}/gliner-pii-base-v1.0.zip`;
   return JSON.stringify({
     status: "loading",
     phase: "needs_setup",
@@ -524,7 +552,12 @@ function renderNeedsSetupEnvelope(): string {
     version: VERSION,
     runtime: "node.js",
     supported_entities: [...SUPPORTED_ENTITIES],
+    setup_panel_resource_uri: SETUP_RESOURCE_URI,
+    setup_panel_tool: "start_model_setup",
     setup_instructions: {
+      panel_tool: "start_model_setup",
+      panel_resource_uri: SETUP_RESOURCE_URI,
+      model_zip_url: modelZipUrl,
       one_liner_windows: oneLinerWindows,
       one_liner_mac_linux: oneLinerUnix,
       script_urls: {
@@ -536,12 +569,10 @@ function renderNeedsSetupEnvelope(): string {
       searched_paths: getNeedsSetupSearched(),
     },
     user_message:
-      "PII Shield needs its GLiNER model (one-time, ~634 MB). Run ONE of these in your terminal:\n\n" +
-      `  Windows (PowerShell):  ${oneLinerWindows}\n` +
-      `  macOS / Linux:         ${oneLinerUnix}\n\n` +
-      `The script downloads the model into ${MODEL_EXPECTED_PATH} (~2-5 min). Then ask me again and I'll pick up the model automatically.`,
+      "PII Shield needs its GLiNER model (one-time, ~634 MB). I'll open the in-chat install panel where you can click Download (browser does the download) and then Install (PII Shield finds and unpacks the ZIP automatically).",
     display_instruction:
-      "Print the `user_message` field verbatim to the user. Stop and wait for them to run the one-liner. On the next user message, retry the original request — do not re-poll list_entities until then.",
+      "Call `start_model_setup` to open the in-chat install panel. The user clicks Download (their browser handles the 634 MB file) then Install (the server auto-detects the ZIP in Downloads / OneDrive / Desktop and unpacks it into ~/.pii_shield/models/). " +
+      "If MCP Apps panels aren't supported by this host, fall back to printing `setup_instructions.one_liner_windows` or `one_liner_mac_linux` for the user to paste into a terminal.",
   }, null, 2);
 }
 
@@ -1823,6 +1854,154 @@ registerAppResource(server,
     };
   },
 );
+
+// ── start_model_setup — MCP Apps tool (renders install iframe in chat) ───────
+//
+// Called by Claude when `list_entities` returns `phase: "needs_setup"` (or
+// when the user explicitly asks to (re-)install the model). Returns a
+// structured envelope describing the current model state — the iframe also
+// probes via `list_entities` once it's connected, so the structuredContent
+// here is just an initial hint.
+
+async function handleStartModelSetup(_args: ToolArgs): Promise<{
+  content: Array<{ type: "text"; text: string }>;
+  structuredContent: Record<string, unknown>;
+}> {
+  const ner = getNerStatus();
+  const payload: Record<string, unknown> = {
+    status: "setup_ready",
+    ner_phase: ner.phase,
+    ner_ready: ner.ready,
+    model_zip_url: `${RELEASE_SCRIPT_BASE}/gliner-pii-base-v1.0.zip`,
+    marker_name: ".pii_shield_model_here",
+    expected_path: MODEL_EXPECTED_PATH,
+  };
+  return {
+    content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+    structuredContent: payload,
+  };
+}
+
+registerAppTool(server,
+  "start_model_setup",
+  {
+    title: "Open model install panel",
+    description:
+      "Open the in-chat install panel for the GLiNER model. The panel renders directly in the chat (MCP Apps io.modelcontextprotocol/ui extension) and shows two buttons: " +
+      "Download (host opens the model release URL in the user's default browser, so the browser handles the 634 MB transfer instead of an unsigned Node child process) and " +
+      "Install (server scans Downloads / OneDrive / Desktop / etc. for the saved ZIP, validates, atomic-extracts into ~/.pii_shield/models/, re-inits NER). " +
+      "Call this tool when list_entities returns phase: 'needs_setup'.",
+    inputSchema: {},
+    _meta: {
+      ui: { resourceUri: SETUP_RESOURCE_URI },
+    },
+  },
+  async (args) => {
+    const toolArgs = (args || {}) as ToolArgs;
+    touchBeaconToolCall("start_model_setup");
+    logToolCall("start_model_setup", toolArgs);
+    try {
+      const result = await handleStartModelSetup(toolArgs);
+      logToolResponse("start_model_setup", JSON.stringify(result.structuredContent));
+      return result;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      logToolError("start_model_setup", error);
+      const errPayload = { status: "error", error: error.message };
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(errPayload, null, 2) }],
+        structuredContent: errPayload,
+        isError: true,
+      };
+    }
+  },
+);
+
+// ── Setup UI resource ────────────────────────────────────────────────────────
+
+registerAppResource(server,
+  "PII Shield Setup Panel",
+  SETUP_RESOURCE_URI,
+  {
+    description: "Two-button install panel for the GLiNER model (download via browser, install via server tool)",
+    mimeType: RESOURCE_MIME_TYPE,
+  },
+  async (_uri) => {
+    return {
+      contents: [
+        {
+          uri: SETUP_RESOURCE_URI,
+          mimeType: RESOURCE_MIME_TYPE,
+          text: await getSetupHtml(),
+        },
+      ],
+    };
+  },
+);
+
+// ── install_model_from_download — server tool called by setup iframe ─────────
+//
+// Iframe calls this after the user has downloaded the model ZIP via the
+// browser. Server runs a 3-tier search (see findDownloadedGlinerZip in
+// ner-backend.ts) → if found, atomic-extracts via extractAndInstallModelZip
+// → calls forceReinitNer so the next list_entities reports ready. Iframe
+// renders the response into the install-log block.
+
+async function handleInstallModelFromDownload(_args: ToolArgs): Promise<string> {
+  // First pass: try Tier 1 + Tier 2 (marker BFS). If user hasn't dropped a
+  // marker yet, marker-fallback will simply find nothing and we return
+  // `hint: "configure_dir"` to the iframe.
+  const found = findDownloadedGlinerZip();
+  if (found.status === "not_found") {
+    return JSON.stringify({
+      status: "not_found",
+      hint: found.hint,
+      marker_name: found.marker_name,
+      searched: found.searched,
+    }, null, 2);
+  }
+
+  const zipPath = found.zip_path!;
+  nerLog(`[NER] install_model_from_download: extracting ${zipPath}`);
+  const installed = await extractAndInstallModelZip(zipPath);
+  if (installed.status !== "installed") {
+    return JSON.stringify({
+      status: installed.status,
+      found_zip_path: zipPath,
+      error: installed.error,
+    }, null, 2);
+  }
+
+  // Re-init NER so the existing engine picks up the freshly installed model
+  // without a server restart. forceReinitNer clears _initFailed, _initPromise,
+  // cached _gliner and re-runs ensureModelFiles → loadOnnxModel.
+  try {
+    await forceReinitNer();
+    nerLog(`[NER] install_model_from_download: forceReinitNer resolved, phase=${getNerStatus().phase}`);
+  } catch (e) {
+    nerLog(`[NER] install_model_from_download: forceReinitNer threw (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    // Don't fail the install response — the model is on disk, the next
+    // list_entities call will pick it up via auto-retry.
+  }
+
+  return JSON.stringify({
+    status: "installed",
+    found_zip_path: zipPath,
+    extracted_to: installed.extracted_to,
+    model_size_mb: installed.model_size_mb,
+  }, null, 2);
+}
+
+server.registerTool("install_model_from_download", {
+  title: "Install GLiNER model from a downloaded ZIP",
+  description:
+    "Find the gliner-pii-base-v1.0(*).zip the user downloaded via their browser, " +
+    "validate it, atomically install it into ~/.pii_shield/models/, and re-init NER. " +
+    "Searches ~/Downloads, OneDrive variants, Desktop, Documents, configured dirs, " +
+    "and the cross-platform marker BFS. Called by the in-chat setup panel " +
+    "(start_model_setup); not intended for direct user invocation.",
+  inputSchema: {},
+}, wrapPlainTool("install_model_from_download", handleInstallModelFromDownload));
 
 // ── Graceful shutdown ────────────────────────────────────────────────────────
 

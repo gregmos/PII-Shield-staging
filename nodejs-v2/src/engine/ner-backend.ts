@@ -18,14 +18,17 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { createRequire as _createRequire } from "node:module";
 import nodeModule from "node:module";
 import { pathToFileURL, fileURLToPath } from "node:url";
+import JSZip from "jszip";
 import type { DetectedEntity } from "./pattern-recognizers.js";
 import NER_DEPS_LOCKFILE_TEMPLATE from "./ner-deps-lockfile.json";
 import { PATHS } from "../utils/config.js";
 import { logServer } from "../audit/audit-logger.js";
 import { updateBeaconNer } from "../sidecar/bootstrap-beacon.js";
+import { findMarker } from "../path-resolution/bfs-finder.js";
 
 function getDepsDir(): string {
   return path.join(getDepsInstallsDir(), getDepsInstallSlug());
@@ -794,6 +797,375 @@ async function ensureModelFiles(): Promise<{ modelPath: string; tokenizerDir: st
   err.code = "NEEDS_SETUP";
   err.searched = candidateModelDirs();
   throw err;
+}
+
+// ── ZIP-based first-run install (v2.1 setup-panel flow) ─────────────────────
+//
+// User flow (in-chat MCP Apps panel, see ui/setup-app.ts):
+//   1. User clicks Download → host opens MODEL_ZIP_URL in default browser.
+//      Browser does the download (Defender treats it like any normal browser
+//      file — the alternative of fetching from this Node child process is
+//      reliably blocked by SmartScreen on Windows).
+//   2. User clicks Install → server calls findDownloadedGlinerZip() to locate
+//      the saved ZIP in standard download locations + OneDrive variants +
+//      Known Folder GUID + xdg-user-dir + marker fallback BFS, then
+//      extractAndInstallModelZip() unpacks it into ~/.pii_shield/models/
+//      atomically.
+//   3. handleInstallModelFromDownload (in src/index.ts) calls forceReinitNer
+//      after install so the next list_entities reports phase=ready.
+//
+// All three tiers below are reachable from the same panel; iframe surfaces
+// the right hint to the user when a tier returns not_found.
+
+/**
+ * Filenames that count as the model ZIP. Handles Chrome's "(N).zip" dedupe
+ * suffix when a user downloads more than once. Case-insensitive — Windows
+ * filesystems are case-preserving but case-insensitive for matching.
+ */
+const MODEL_ZIP_FILENAME_PATTERN = /^gliner-pii-base-v1\.0(?:\s\(\d+\))?\.zip$/i;
+
+/**
+ * Marker filename for the Tier-2 fallback. User drops an empty file with
+ * this name next to the downloaded ZIP if Tier 1 missed; the cross-platform
+ * `findMarker()` BFS in bfs-finder.ts finds it.
+ */
+const MODEL_MARKER_FILENAME = ".pii_shield_model_here";
+
+/**
+ * Sanity floor for the downloaded ZIP. The compressed size is ~613 MB; we
+ * accept ≥ 500 MB to leave room for HuggingFace re-pack variations and
+ * future quantization (quantized variant is ~170 MB and won't trip this
+ * check — the floor is purely "is this a partial / wrong file" guard).
+ */
+const MODEL_ZIP_MIN_BYTES = 500 * 1024 * 1024;
+
+/**
+ * Windows: read the user's Downloads dir from the User Shell Folders
+ * registry key. Handles GPO redirection and OneDrive Known Folder Move
+ * which both rewrite this entry away from the literal `%USERPROFILE%\Downloads`.
+ *
+ * GUID `{374DE290-123F-4565-9164-39C4925E467B}` = FOLDERID_Downloads
+ * (Microsoft KNOWNFOLDERID list).
+ */
+function getWindowsKnownDownloadsDir(): string | null {
+  if (process.platform !== "win32") return null;
+  try {
+    const result = spawnSync(
+      "reg",
+      [
+        "query",
+        "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders",
+        "/v",
+        "{374DE290-123F-4565-9164-39C4925E467B}",
+      ],
+      { encoding: "utf-8" },
+    );
+    if (result.status !== 0) return null;
+    const m = result.stdout.match(/REG_(?:EXPAND_)?SZ\s+(.+?)\s*$/m);
+    if (!m) return null;
+    let p = m[1].trim();
+    p = p.replace(/%USERPROFILE%/i, os.homedir());
+    return p;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Linux: ask `xdg-user-dir DOWNLOAD` for the localized Downloads dir
+ * (e.g. `~/Téléchargements` under fr_FR locale). Falls back to null if
+ * xdg-user-dir isn't installed — caller already adds `~/Downloads`.
+ */
+function getXdgDownloadDir(): string | null {
+  if (process.platform === "win32" || process.platform === "darwin") return null;
+  try {
+    const result = spawnSync("xdg-user-dir", ["DOWNLOAD"], { encoding: "utf-8" });
+    if (result.status !== 0) return null;
+    const dir = result.stdout.trim();
+    return dir && dir !== os.homedir() ? dir : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ordered list of dirs to scan (non-recursively, just `readdir`) for the
+ * model ZIP. Order is "most likely first" — explicit user override, then
+ * connected workspace, then OS-canonical Downloads, then OneDrive variants,
+ * then desktop / documents fallbacks.
+ */
+function getCandidateDownloadDirs(): string[] {
+  const home = os.homedir();
+  const dirs: string[] = [];
+
+  // 1. Explicit user override via Claude Desktop Extension Settings →
+  // user_config.model_downloads_dir (manifest.json) → env.
+  const explicit = (process.env.PII_SHIELD_MODEL_DOWNLOADS_DIR || "").trim();
+  if (explicit) dirs.push(explicit);
+
+  // 2. PII_WORK_DIR — folder the user has connected to the current Claude
+  // chat (already used by anonymize_file). Many users save the ZIP there.
+  const workDir = (process.env.PII_WORK_DIR || "").trim();
+  if (workDir) dirs.push(workDir);
+
+  // 3. ~/Downloads — default for macOS, Linux, plain Windows without
+  // OneDrive redirection.
+  dirs.push(path.join(home, "Downloads"));
+
+  // 4. Windows Known Folder lookup — authoritative on Windows, handles
+  // GPO redirects + OneDrive Known Folder Move.
+  const winKnown = getWindowsKnownDownloadsDir();
+  if (winKnown) dirs.push(winKnown);
+
+  // 5. Linux: localized XDG Downloads dir.
+  const xdgDl = getXdgDownloadDir();
+  if (xdgDl) dirs.push(xdgDl);
+
+  // 6. OneDrive personal default (manual install of OneDrive client points
+  // here even without Known Folder Move).
+  dirs.push(path.join(home, "OneDrive", "Downloads"));
+
+  // 7. Corporate OneDrive: `~/OneDrive - <OrgName>/Downloads/`. Glob the
+  // home dir for "OneDrive - *" siblings (cheap — single readdir).
+  try {
+    const homeEntries = fs.readdirSync(home, { withFileTypes: true });
+    for (const e of homeEntries) {
+      if (e.isDirectory() && /^OneDrive - .+$/.test(e.name)) {
+        dirs.push(path.join(home, e.name, "Downloads"));
+      }
+    }
+  } catch { /* unreadable home — skip */ }
+
+  // 8. Desktop and Documents — secondary fallbacks (some browsers default
+  // here, some users save manually).
+  dirs.push(path.join(home, "Desktop"));
+  dirs.push(path.join(home, "Documents"));
+
+  // De-duplicate while preserving order.
+  return [...new Set(dirs.filter(Boolean))];
+}
+
+/**
+ * Find the highest-numbered matching ZIP in `dir` (non-recursive). Picks
+ * `gliner-pii-base-v1.0 (3).zip` over `gliner-pii-base-v1.0 (1).zip` over
+ * `gliner-pii-base-v1.0.zip` — Chrome dedupe convention means the highest
+ * suffix is the most recent download. Returns absolute path or null.
+ */
+function findZipInDir(dir: string): string | null {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const matches = entries
+    .filter((e) => e.isFile() && MODEL_ZIP_FILENAME_PATTERN.test(e.name))
+    .map((e) => {
+      const m = e.name.match(/\((\d+)\)\.zip$/i);
+      return { name: e.name, num: m ? parseInt(m[1], 10) : 0 };
+    })
+    .sort((a, b) => b.num - a.num);
+  if (matches.length === 0) return null;
+  return path.join(dir, matches[0].name);
+}
+
+export interface FindZipResult {
+  status: "found" | "not_found";
+  zip_path?: string;
+  hint?: "marker_required" | "configure_dir";
+  searched: string[];
+  marker_name?: string;
+}
+
+/**
+ * Three-tier search for the downloaded GLiNER model ZIP. See the comment
+ * block at the top of this section for the rationale.
+ *
+ * Tier 1 — candidate-path scan via `getCandidateDownloadDirs()`. Single
+ * `readdir` per dir; total work bounded at ~10 dirs.
+ *
+ * Tier 2 — full-tree marker BFS. Reuses the cross-platform `findMarker()`
+ * from `path-resolution/bfs-finder.ts:54` (already used by `resolve_path`
+ * for VM/host path mapping). User drops `.pii_shield_model_here` next to
+ * the ZIP; we find the marker, scan its parent dir, delete the marker.
+ *
+ * Tier 3 — return `configure_dir` hint so the iframe directs the user to
+ * the manifest.json `model_downloads_dir` setting.
+ */
+export function findDownloadedGlinerZip(opts?: { skipMarkerFallback?: boolean }): FindZipResult {
+  const candidates = getCandidateDownloadDirs();
+  const searched: string[] = [];
+
+  // Tier 1
+  for (const dir of candidates) {
+    if (!dir) continue;
+    searched.push(dir);
+    const found = findZipInDir(dir);
+    if (found) {
+      nerLog(`[NER] findDownloadedGlinerZip: Tier 1 hit at ${found}`);
+      return { status: "found", zip_path: found, searched };
+    }
+  }
+
+  // Tier 2 — marker BFS
+  if (!opts?.skipMarkerFallback) {
+    nerLog(`[NER] findDownloadedGlinerZip: Tier 1 miss; trying marker BFS for ${MODEL_MARKER_FILENAME}`);
+    try {
+      const markerPath = findMarker(MODEL_MARKER_FILENAME);
+      if (markerPath) {
+        const markerDir = path.dirname(markerPath);
+        searched.push(`<marker> ${markerDir}`);
+        const found = findZipInDir(markerDir);
+        if (found) {
+          // Clean up marker after a successful resolution (mirrors path-resolver).
+          try { fs.unlinkSync(markerPath); } catch { /* */ }
+          nerLog(`[NER] findDownloadedGlinerZip: Tier 2 hit via marker at ${found}`);
+          return { status: "found", zip_path: found, searched };
+        }
+        nerLog(`[NER] findDownloadedGlinerZip: marker found at ${markerDir} but no matching ZIP nearby`);
+      }
+    } catch (e) {
+      nerLog(`[NER] findDownloadedGlinerZip: marker BFS errored: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // Tier 3 — surface the right hint
+  return {
+    status: "not_found",
+    hint: opts?.skipMarkerFallback ? "marker_required" : "configure_dir",
+    searched,
+    marker_name: MODEL_MARKER_FILENAME,
+  };
+}
+
+export interface InstallZipResult {
+  status: "installed" | "validation_failed" | "extract_failed";
+  extracted_to?: string;
+  model_size_mb?: number;
+  error?: string;
+}
+
+/**
+ * Extract a `gliner-pii-base-v1.0*.zip` into a temporary staging dir under
+ * `~/.pii_shield/models/`, validate via the existing `isValidModelDir()`,
+ * then atomically `renameSync` into the canonical model dir. JSZip handles
+ * the unpack — already a runtime dep used by docx-reader / docx-redliner /
+ * session-archive.
+ *
+ * On failure at any step we wipe the staging dir; the canonical model dir
+ * stays untouched so a retry can pick a different ZIP.
+ */
+export async function extractAndInstallModelZip(zipPath: string): Promise<InstallZipResult> {
+  // Use PATHS.MODELS_DIR (= getDataDir() + "/models") so PII_SHIELD_DATA_DIR
+  // and CLAUDE_PLUGIN_DATA env overrides redirect the install correctly.
+  // ensureModelFiles() reads from the same source-of-truth.
+  const targetParent = PATHS.MODELS_DIR;
+  const finalDir = path.join(targetParent, MODEL_SLUG);
+  const stagingDir = path.join(
+    targetParent,
+    `.${MODEL_SLUG}.partial-${process.pid}-${crypto.randomBytes(4).toString("hex")}`,
+  );
+
+  if (!fs.existsSync(zipPath)) {
+    return { status: "extract_failed", error: `ZIP not found at ${zipPath}` };
+  }
+  let zipStat: fs.Stats;
+  try {
+    zipStat = fs.statSync(zipPath);
+  } catch (e) {
+    return { status: "extract_failed", error: `Cannot stat ZIP: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (zipStat.size < MODEL_ZIP_MIN_BYTES) {
+    return {
+      status: "validation_failed",
+      error: `ZIP is only ${(zipStat.size / 1024 / 1024).toFixed(1)} MB, expected ≥ ${MODEL_ZIP_MIN_BYTES / 1024 / 1024} MB. Re-download.`,
+    };
+  }
+
+  fs.mkdirSync(stagingDir, { recursive: true });
+
+  // Load ZIP into memory. 613 MB ZIP → ~700 MB allocation. Acceptable on
+  // modern desktops; if this becomes a problem we can switch to a streaming
+  // unzip lib.
+  let zip: JSZip;
+  try {
+    const buffer = fs.readFileSync(zipPath);
+    zip = await JSZip.loadAsync(buffer);
+  } catch (e) {
+    cleanupStagingDir(stagingDir);
+    return {
+      status: "extract_failed",
+      error: `Failed to read ZIP: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+
+  // Write entries. The shipped ZIP is flat — 5 files at root. Defensively
+  // strip any leading dirs so a slightly-different layout still lands flat.
+  try {
+    for (const [name, file] of Object.entries(zip.files)) {
+      if (file.dir) continue;
+      const basename = path.basename(name);
+      if (!basename) continue;
+      const dest = path.join(stagingDir, basename);
+      const data = await file.async("nodebuffer");
+      fs.writeFileSync(dest, data);
+    }
+  } catch (e) {
+    cleanupStagingDir(stagingDir);
+    return {
+      status: "extract_failed",
+      error: `Failed to write extracted file: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+
+  // Validate via existing helper — same checks `ensureModelFiles` runs.
+  if (!isValidModelDir(stagingDir)) {
+    const modelPath = path.join(stagingDir, "model.onnx");
+    const sizeStr = fs.existsSync(modelPath)
+      ? `${(fs.statSync(modelPath).size / 1024 / 1024).toFixed(1)} MB`
+      : "missing";
+    cleanupStagingDir(stagingDir);
+    return {
+      status: "validation_failed",
+      error: `Extracted dir failed validation. model.onnx: ${sizeStr}. Required tokenizer files: ${TOKENIZER_FILES.join(", ")}.`,
+    };
+  }
+
+  // Atomic install. On Windows, renameSync over an existing dir errors;
+  // we rmSync first. POSIX renameSync replaces atomically, so the rmSync
+  // is the rare-case fallback.
+  try {
+    if (fs.existsSync(finalDir)) {
+      fs.rmSync(finalDir, { recursive: true, force: true });
+    }
+    fs.renameSync(stagingDir, finalDir);
+  } catch (e) {
+    cleanupStagingDir(stagingDir);
+    return {
+      status: "extract_failed",
+      error: `Failed to install: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+
+  const modelPath = path.join(finalDir, "model.onnx");
+  const modelSize = fs.statSync(modelPath).size;
+  const modelSizeMb = Math.round(modelSize / 1024 / 1024);
+
+  nerLog(`[NER] extractAndInstallModelZip: installed at ${finalDir} (${modelSizeMb} MB)`);
+
+  return {
+    status: "installed",
+    extracted_to: finalDir,
+    model_size_mb: modelSizeMb,
+  };
+}
+
+function cleanupStagingDir(stagingDir: string): void {
+  try {
+    if (fs.existsSync(stagingDir)) {
+      fs.rmSync(stagingDir, { recursive: true, force: true });
+    }
+  } catch { /* best effort */ }
 }
 
 /**

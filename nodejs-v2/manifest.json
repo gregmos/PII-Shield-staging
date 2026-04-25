@@ -22,7 +22,8 @@
         "PII_NER_THRESHOLD": "${user_config.ner_threshold}",
         "PII_WORK_DIR": "${user_config.work_dir}",
         "PII_SKIP_REVIEW": "${user_config.skip_review}",
-        "PII_SHIELD_MODELS_DIR": "${user_config.models_path}"
+        "PII_SHIELD_MODELS_DIR": "${user_config.models_path}",
+        "PII_SHIELD_MODEL_DOWNLOADS_DIR": "${user_config.model_downloads_dir}"
       },
       "platform_overrides": {
         "darwin": {
@@ -47,6 +48,8 @@
     {"name": "list_entities", "description": "Show status, supported types, and recent sessions"},
     {"name": "start_review", "description": "Open the HITL review panel in the chat (MCP Apps iframe). PII stays on your machine — decisions travel back via apply_review_overrides."},
     {"name": "apply_review_overrides", "description": "Apply the user's review decisions (remove false positives, add missed entities). Called by the review panel when the user clicks Approve."},
+    {"name": "start_model_setup", "description": "Open the in-chat install panel for the GLiNER model (MCP Apps iframe). Two buttons: Download (host opens release URL in browser, browser handles 634 MB transfer) and Install (server auto-detects ZIP in Downloads / OneDrive / Desktop / etc., extracts into ~/.pii_shield/models/). Call when list_entities returns phase: 'needs_setup'."},
+    {"name": "install_model_from_download", "description": "Server tool called by the setup panel after the user downloads gliner-pii-base-v1.0.zip. Finds the ZIP via 3-tier search (candidate dirs / marker BFS / configured folder), validates, atomic-extracts, re-inits NER."},
     {"name": "anonymize_next_chunk", "description": "Process next chunk of a chunked anonymization session."},
     {"name": "get_full_anonymized_text", "description": "Assemble all processed chunks and finalize the anonymization."},
     {"name": "resolve_path", "description": "Zero-config file path resolution via marker file BFS."},
@@ -87,6 +90,13 @@
       "type": "directory",
       "title": "GLiNER model directory (optional)",
       "description": "Folder containing gliner-pii-base-v1.0/ (the model + 4 tokenizer files). Leave empty to auto-detect in ~/.pii_shield/models/ (the default location used by install-model.ps1 / install-model.sh).",
+      "default": "",
+      "required": false
+    },
+    "model_downloads_dir": {
+      "type": "directory",
+      "title": "Model downloads folder (rare override)",
+      "description": "Folder to scan for gliner-pii-base-v1.0.zip (the install panel's auto-detect). Leave empty unless your browser saves files somewhere unusual — by default the install panel finds the ZIP in ~/Downloads, OneDrive variants, Desktop, Documents, the Windows Known Folder Downloads path, and the localized XDG Downloads on Linux.",
       "default": "",
       "required": false
     }

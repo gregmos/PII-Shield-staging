@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
+  <title>PII Shield Setup</title>
+</head>
+<body>
+
+<header class="chrome">
+  <div class="topbar">
+    <span class="shield-icon">&#x1f6e1;</span>
+    <h1>PII Shield Setup</h1>
+    <div class="spacer"></div>
+    <span class="status-pill" id="status-pill">Checking…</span>
+  </div>
+</header>
+
+<main class="setup">
+  <section class="step" id="step-download">
+    <div class="step-num">1</div>
+    <div class="step-body">
+      <h2>Download the GLiNER model</h2>
+      <p>One-time download, ~634 MB. The browser does the download — Windows Defender treats it like any normal file.</p>
+      <div class="actions">
+        <button class="btn btn-primary" id="btn-download">Download model</button>
+        <span class="hint" id="download-hint">Opens the release asset in your default browser.</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="step" id="step-install">
+    <div class="step-num">2</div>
+    <div class="step-body">
+      <h2>Install the downloaded ZIP</h2>
+      <p>Once the browser finishes saving <code>gliner-pii-base-v1.0.zip</code>, click below — PII Shield finds it in your Downloads folder, validates it, and unpacks it into <code>~/.pii_shield/models/</code>.</p>
+      <div class="actions">
+        <button class="btn btn-primary" id="btn-install" disabled>Install downloaded ZIP</button>
+        <span class="hint" id="install-hint">Click after the download completes.</span>
+      </div>
+      <div class="install-log" id="install-log" hidden></div>
+    </div>
+  </section>
+
+  <section class="step step-muted" id="step-check">
+    <div class="step-num">3</div>
+    <div class="step-body">
+      <h2>Ready</h2>
+      <p>When NER reports <code>ready</code>, anonymization continues automatically. You can also re-check manually.</p>
+      <div class="actions">
+        <button class="btn btn-secondary" id="btn-check">Check status</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="fallback" id="fallback">
+    <details>
+      <summary>Couldn't find the ZIP? Other ways to install</summary>
+      <ol>
+        <li>
+          <strong>Marker fallback</strong> — drop a small text file named
+          <code id="marker-name">.pii_shield_model_here</code> in the same folder as the downloaded
+          ZIP, then click <em>Install downloaded ZIP</em> again. PII Shield will scan your
+          filesystem for the marker.
+        </li>
+        <li>
+          <strong>Configure folder</strong> — Claude Desktop → Settings → Extensions → PII Shield →
+          <em>Model Downloads Folder</em>. Point at the folder where your browser saves files,
+          then click <em>Install</em>.
+        </li>
+        <li>
+          <strong>Terminal one-liner</strong> (advanced) — see the README's <em>Install model</em>
+          section for the PowerShell / bash one-liner that downloads and installs in one step.
+        </li>
+      </ol>
+    </details>
+  </section>
+</main>
+
+<div class="approved-overlay" id="ready-overlay">
+  <div class="approved-card">
+    <div class="checkmark">&#x2705;</div>
+    <h2>Model installed</h2>
+    <p id="ready-hint">PII Shield is ready. Send any short message in chat to continue.</p>
+  </div>
+</div>
+
+<script type="module" src="/src/setup-app.ts"></script>
+</body>
+</html>

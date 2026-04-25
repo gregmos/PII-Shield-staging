@@ -13,7 +13,8 @@
     "start": "node dist/server.bundle.mjs",
     "dev": "npx tsx src/index.ts",
     "smoke": "node scripts/smoke-protocol.mjs",
-    "smoke:sharp-shim": "node scripts/smoke-sharp-shim.mjs"
+    "smoke:sharp-shim": "node scripts/smoke-sharp-shim.mjs",
+    "smoke:setup-panel": "node scripts/smoke-setup-panel.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
