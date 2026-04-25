@@ -43,44 +43,27 @@ Document ──> [PII Shield on your machine] ──> anonymized text ──> [C
 ### Prerequisites
 
 - [Claude Desktop](https://claude.ai/download) (any recent version)
-- Windows or Linux: any system Node will do — Claude Desktop already ships a compatible runtime. No install needed.
-- macOS: download the macOS-specific `.mcpb` below; it bundles its own Node runtime. No system Node install needed.
+- Windows or Linux: Claude Desktop ships a compatible Node runtime. Nothing to install separately.
+- macOS: the macOS `.mcpb` below bundles its own Node 24.15.0. Nothing to install separately.
 
-### Step 1 — download the model (~634 MB, one time)
+**No terminal commands. No model download upfront.** PII Shield handles model install in-chat via a panel that appears the first time you anonymize.
 
-**Windows (PowerShell):**
-```powershell
-iwr https://raw.githubusercontent.com/gregmos/PII-Shield-staging/main/nodejs-v2/scripts/install-model.ps1 | iex
-```
-
-**macOS / Linux (Terminal):**
-```bash
-curl -fsSL https://raw.githubusercontent.com/gregmos/PII-Shield-staging/main/nodejs-v2/scripts/install-model.sh | bash
-```
-
-The one-liner downloads [`gliner-pii-base-v1.0.zip`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/gliner-pii-base-v1.0.zip) from the release and unpacks it into `~/.pii_shield/models/gliner-pii-base-v1.0/`. No file left on disk — avoids Windows SmartScreen and macOS Gatekeeper prompts.
-
-Prefer to download the script and inspect it first? Direct links:
-
-- Windows PowerShell — [`install-model.ps1`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/install-model.ps1) · double-click launcher [`install-model.bat`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/install-model.bat)
-- macOS / Linux bash — [`install-model.sh`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/install-model.sh) · macOS double-click launcher [`install-model.command`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/install-model.command)
-
-### Step 2 — install the plugin
+### Step 1 — install the plugin
 
 Download the MCPB for your OS and drag-drop it into Claude Desktop (**Settings → Extensions**):
 
 | OS | Download |
 |---|---|
-| **Windows / Linux** | [`pii-shield-v2.0.2-windows-linux.mcpb`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/pii-shield-v2.0.2-windows-linux.mcpb) (~660 KB — uses host Node) |
-| **macOS** (arm64 + x64) | [`pii-shield-v2.0.2-macos.mcpb`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/pii-shield-v2.0.2-macos.mcpb) (~82 MB — bundles Node 24.15.0) |
+| **Windows / Linux** | [`pii-shield-v2.0.2-windows-linux.mcpb`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/pii-shield-v2.0.2-windows-linux.mcpb) (~700 KB — uses host Node) |
+| **macOS** (arm64 + x64) | [`pii-shield-v2.0.2-macos.mcpb`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/pii-shield-v2.0.2-macos.mcpb) (~83 MB — bundles Node 24.15.0) |
 
 On the first call the plugin runs `npm ci --ignore-scripts` to install a pinned, deterministic set of runtime deps (`onnxruntime-node`, `@xenova/transformers`, `gliner`) into `~/.pii_shield/deps/installs/<slug>/`. 2–3 minutes once per machine, instant thereafter.
 
-### Step 3 — install the skill
+### Step 2 — install the skill (recommended)
 
 Download [`pii-contract-analyze.zip`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/pii-contract-analyze.zip) and unpack into `~/.claude/skills/` (or load it via Cowork). The skill orchestrates the end-to-end contract anonymization + analysis flow — Claude uses it to drive `anonymize_file` → HITL review → analysis → `deanonymize_docx` without you spelling out each step.
 
-### Use
+### Step 3 — use it
 
 1. Start a new conversation in Claude Desktop
 2. Select the **pii-contract-analyze** skill
@@ -91,7 +74,16 @@ Download [`pii-contract-analyze.zip`](https://github.com/gregmos/PII-Shield-stag
 Analyze risks for the purchaser in contract.pdf and prepare a short memo
 ```
 
-> ⚠️ **Do NOT attach files directly.** When you attach a file, Claude Desktop sends its content in the API request — Claude sees raw data before PII Shield can process it. **Connect a folder** instead — Claude only gets the file path and calls `anonymize_file` locally.
+#### First-run install panel
+
+The very first time you ask Claude to anonymize anything, PII Shield notices the NER model isn't on disk yet and opens an **in-chat install panel**. You see two buttons:
+
+1. **Download model** — opens your default browser, downloads `gliner-pii-base-v1.0.zip` (~634 MB) from the release. Browser handles the transfer (no Defender / SmartScreen issues with unsigned scripts).
+2. **Install downloaded ZIP** — PII Shield finds the ZIP in your Downloads / OneDrive / Desktop / Documents folder, validates it, atomic-extracts it into `~/.pii_shield/models/`, and re-initializes NER. Anonymization continues automatically.
+
+No terminal, no scripts. Subsequent runs skip the panel entirely.
+
+> ⚠️ **Do NOT attach files directly to anonymize.** When you attach a file, Claude Desktop sends its content in the API request — Claude sees raw data before PII Shield can process it. **Connect a folder** instead — Claude only gets the file path and calls `anonymize_file` locally.
 
 ## Privacy architecture
 
@@ -258,9 +250,9 @@ PII-Shield/
 │   │       ├── pii-contract-analyze/                 # canonical skill source (SKILL.md + references/*.md)
 │   │       └── pii-contract-analyze.zip              # release artefact — auto-rebuilt from the source dir by build-plugin.mjs
 │   ├── scripts/
-│   │   ├── install-model.{ps1,bat,sh,command}
-│   │   ├── smoke-protocol.mjs
-│   │   └── smoke-sharp-shim.mjs
+│   │   ├── smoke-protocol.mjs                       # MCP protocol round-trip smoke
+│   │   ├── smoke-setup-panel.mjs                    # Setup-panel + install-tool smoke
+│   │   └── smoke-sharp-shim.mjs                     # Clean-install sharp-shim smoke
 │   ├── manifest.json                                 # MCPB manifest (server.type=node)
 │   └── package.json
 ├── .github/workflows/test.yml                        # Node CI (ubuntu + windows + macos, Node 18 + 20)
@@ -275,9 +267,11 @@ PII-Shield/
 | Problem | Solution |
 |---------|----------|
 | First run is slow | First-ever call does `npm ci` into `~/.pii_shield/deps/` (~2–3 min). Subsequent runs are instant. |
-| "GLiNER model not found" / `needs_setup` response | Run `install-model.ps1` (Windows) or `install-model.sh` (macOS / Linux). See Quick Start Step 1. |
+| Install panel says "ZIP not found" | Click the panel's **Download model** button first. The browser saves to `~/Downloads` by default; PII Shield also scans OneDrive variants, Desktop, Documents. If your browser saves elsewhere, set **Settings → Extensions → PII Shield → Model Downloads Folder** and click Install again. |
+| Install panel doesn't appear at all | The panel needs Claude Desktop ≥ 0.10 (renders `ui://` resources). On older hosts, ask Claude to call `start_model_setup` directly, or check `~/.pii_shield/audit/pii_shield_server.log`. |
 | `Unsupported model IR version: 9` | Old `onnxruntime-node` cached. Delete `~/.pii_shield/deps/` — next run reinstalls with the pinned 1.22.0 triplet. |
 | `Cannot find module '../build/Release/sharp-*.node'` | `sharp` has no native addon for your platform. PII Shield's shim intercepts `sharp` loads (text-only NER doesn't use it). If you still see this, you're on an older build — upgrade to v2.0.2. |
+| macOS: server immediately disconnects after install | Make sure you installed `pii-shield-v2.0.2-macos.mcpb`, not `windows-linux`. The Mac variant bundles its own Node to dodge a Claude Desktop darwin host-runtime launch bug. |
 | Review panel blank | Check `~/.pii_shield/audit/pii_shield_server.log` for MCP Apps resource errors. Claude Desktop version < 0.10 doesn't render `ui://` resources. |
 | Tools not appearing | Restart Claude Desktop or send any message — the tool list refreshes on reconnect. |
 
