@@ -27,7 +27,7 @@ $ErrorActionPreference = "Stop"
 $MODEL_SLUG = "gliner-pii-base-v1.0"
 $MODEL_VERSION = "v2.0.2"
 $TARGET = Join-Path $HOME ".pii_shield\models\$MODEL_SLUG"
-$MODEL_ZIP_URL = "https://github.com/gregmos/PII-Shield-staging/releases/download/$MODEL_VERSION/$MODEL_SLUG.zip"
+$MODEL_ZIP_URL = "https://github.com/gregmos/PII-Shield/releases/download/$MODEL_VERSION/$MODEL_SLUG.zip"
 
 # Custom downloader using System.Net.Http.HttpClient. Built-in
 # Invoke-WebRequest in Windows PowerShell 5.1 redraws its progress bar by
@@ -183,6 +183,6 @@ Write-Host ""
 Write-Host "[OK] Model installed at $TARGET ($modelMb MB, total time $overallTimeStr)" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next step: install pii-shield-v2.0.2-windows-linux.mcpb from"
-Write-Host "  https://github.com/gregmos/PII-Shield-staging/releases"
+Write-Host "  https://github.com/gregmos/PII-Shield/releases"
 Write-Host "into Claude Desktop (Settings -> Extensions -> drag-drop)."
 Write-Host ""

@@ -29,7 +29,7 @@ import "./setup.css";
  * `src/index.ts` and `MODEL_ZIP_URL` in `scripts/install-model.{ps1,sh}`.
  */
 const MODEL_ZIP_URL =
-  "https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/gliner-pii-base-v1.0.zip";
+  "https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/gliner-pii-base-v1.0.zip";
 
 /** Marker filename for the Tier-2 fallback in `findDownloadedGlinerZip`. */
 const MARKER_NAME = ".pii_shield_model_here";

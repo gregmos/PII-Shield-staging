@@ -4,8 +4,8 @@
     <strong>Anonymize documents before Claude sees them. Restore real data after analysis.</strong>
   </p>
   <p align="center">
-    <a href="https://github.com/gregmos/PII-Shield-staging/stargazers"><img src="https://img.shields.io/github/stars/gregmos/PII-Shield-staging?style=flat-square&color=yellow" alt="GitHub Stars"></a>
-    <a href="https://github.com/gregmos/PII-Shield-staging/network/members"><img src="https://img.shields.io/github/forks/gregmos/PII-Shield-staging?style=flat-square" alt="GitHub Forks"></a>
+    <a href="https://github.com/gregmos/PII-Shield/stargazers"><img src="https://img.shields.io/github/stars/gregmos/PII-Shield?style=flat-square&color=yellow" alt="GitHub Stars"></a>
+    <a href="https://github.com/gregmos/PII-Shield/network/members"><img src="https://img.shields.io/github/forks/gregmos/PII-Shield?style=flat-square" alt="GitHub Forks"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License: MIT"></a>
     <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-18%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js 18+"></a>
   </p>
@@ -54,9 +54,9 @@ Pick the `.mcpb` for your OS plus the skill bundle:
 
 | File | What | OS |
 |---|---|---|
-| [`pii-shield-v2.0.2-windows-linux.mcpb`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/pii-shield-v2.0.2-windows-linux.mcpb) | ~700 KB — uses host Node | **Windows / Linux** |
-| [`pii-shield-v2.0.2-macos.mcpb`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/pii-shield-v2.0.2-macos.mcpb) | ~83 MB — bundles Node 24.15.0 | **macOS** (arm64 + x64) |
-| [`pii-contract-analyze.skill`](https://github.com/gregmos/PII-Shield-staging/releases/download/v2.0.2/pii-contract-analyze.skill) | ~25 KB — contract analysis skill | any |
+| [`pii-shield-v2.0.2-windows-linux.mcpb`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/pii-shield-v2.0.2-windows-linux.mcpb) | ~700 KB — uses host Node | **Windows / Linux** |
+| [`pii-shield-v2.0.2-macos.mcpb`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/pii-shield-v2.0.2-macos.mcpb) | ~83 MB — bundles Node 24.15.0 | **macOS** (arm64 + x64) |
+| [`pii-contract-analyze.skill`](https://github.com/gregmos/PII-Shield/releases/download/v2.0.2/pii-contract-analyze.skill) | ~25 KB — contract analysis skill | any |
 
 ### Step 2 — install the MCP extension
 
@@ -286,7 +286,7 @@ PII-Shield/
 
 v1.0.0 was a Python MCP server built on presidio + SpaCy + GLiNER/py, shipped as a `.dxt` bundle. It's still available:
 
-- Tag [`v1.0.0`](https://github.com/gregmos/PII-Shield-staging/releases/tag/v1.0.0) — pinned source.
+- Tag [`v1.0.0`](https://github.com/gregmos/PII-Shield/releases/tag/v1.0.0) — pinned source.
 - Branch `python-legacy` — full tree before the Node.js rewrite.
 
 v2 is a complete architectural reset — Node.js, pure-JS `.docx`, MCP Apps UI, thin `.mcpb` — not a drop-in upgrade.
