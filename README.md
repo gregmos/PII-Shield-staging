@@ -21,13 +21,12 @@ Document ──> [PII Shield on your machine] ──> anonymized text ──> [L
               Acme Corp.  → <ORG_1>                                                   <ORG_1>    → Acme Corp.
 ```
 
-Three ways to use it, sharing the same engine:
+Two ways to use it, sharing the same engine:
 
 | Form | Who it's for | Install |
 |---|---|---|
 | **Standalone CLI** (`pii-shield`) | Anyone — anonymize files locally for any LLM (or just for compliance / GDPR). Pure offline. | `npm install -g pii-shield` |
-| **Claude Desktop extension** (`.mcpb`) | Claude Desktop users — get tools + skill + in-chat HITL panel. | Drag the `.mcpb` from a release into Settings → Extensions |
-| **Claude Code plugin** (`.zip`) | Claude Code CLI users — same tools, same skill, MCP wired automatically. | `/plugin install …` from a marketplace or local dir |
+| **Claude Desktop / Code extension** (`.mcpb` + `.skill`) | Claude Desktop and Claude Code users — get tools + skill + in-chat HITL panel. | Drag the `.mcpb` from a release into Settings → Extensions, then upload the `.skill` |
 
 > **v2.0.2 is a complete Node.js rewrite.** The original Python product is still available — see [What happened to v1?](#what-happened-to-v1) below.
 
