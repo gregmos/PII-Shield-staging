@@ -25,9 +25,25 @@ const INPUT = process.env.INPUT || "review.html";
 const INPUT_ABS = path.resolve(__dirname, "ui", INPUT);
 const isDev = process.env.NODE_ENV === "development";
 
+// When INPUT=review-cli.html, swap the MCP Apps SDK for our HTTP-backed shim.
+// review-app.ts imports App from `@modelcontextprotocol/ext-apps`; the alias
+// redirects that import to ui/src/cli-app-shim.ts so the rest of the UI
+// renders unchanged. The MCP build (INPUT=review.html) keeps the real SDK.
+const isCliBuild = INPUT === "review-cli.html";
+
 export default defineConfig({
   root: "ui",
   plugins: [viteSingleFile()],
+  resolve: isCliBuild
+    ? {
+        alias: {
+          "@modelcontextprotocol/ext-apps": path.resolve(
+            __dirname,
+            "ui/src/cli-app-shim.ts",
+          ),
+        },
+      }
+    : undefined,
   build: {
     sourcemap: isDev ? "inline" : false,
     cssMinify: !isDev,

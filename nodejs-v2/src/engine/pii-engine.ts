@@ -11,6 +11,17 @@ import { filterJurisdictionEntities, filterCurrencyEntities, filterGarbageNerEnt
 import { initNer, isNerReady, runNer, nerLog } from "./ner-backend.js";
 import { logServer } from "../audit/audit-logger.js";
 
+/**
+ * Gate console.error noise behind PII_AUDIT_STDERR. CLI sets this to false
+ * to keep stderr clean; MCP stdio mode keeps the default (true) since the
+ * host captures stderr for diagnostics. `--debug` flips it back on.
+ */
+function piiEngineEcho(msg: string): void {
+  if (process.env.PII_AUDIT_STDERR !== "false") {
+    console.error(msg);
+  }
+}
+
 let _instance: PIIEngine | null = null;
 
 // Manual chunking constants for NER inference.
@@ -142,7 +153,10 @@ function propagateVerbatimMatches(
       matchCount++;
       if (overlapsExisting(s, e)) {
         skipCount++;
-        nerLog(`[NER] propagation: SKIP "${src.rawText}" at [${s}:${e}] — overlaps existing entity`);
+        // PII safety: src.rawText is the real entity ("John Smith"). Log
+        // type + offsets only. The full audit chain still has the data
+        // (anonymize_text_cli response), redacted there.
+        nerLog(`[NER] propagation: SKIP ${src.type} at [${s}:${e}] — overlaps existing entity`);
         continue;
       }
       propagated.push({
@@ -156,7 +170,8 @@ function propagateVerbatimMatches(
       });
     }
     if (matchCount > 0 || skipCount > 0) {
-      nerLog(`[NER] propagation: "${src.rawText}" (${src.type}) — ${matchCount} regex matches, ${skipCount} skipped (overlap), ${matchCount - skipCount} added`);
+      // PII safety: omit src.rawText. Type + counts are enough for forensics.
+      nerLog(`[NER] propagation: ${src.type} — ${matchCount} regex matches, ${skipCount} skipped (overlap), ${matchCount - skipCount} added`);
     }
   }
 
@@ -253,8 +268,8 @@ export class PIIEngine {
   startNerBackground(): void {
     if (this._nerInitPromise) return;
     this._nerInitPromise = initNer()
-      .then(() => console.error("[PII Engine] NER ready (background init complete)"))
-      .catch((e) => console.error(`[PII Engine] NER unavailable: ${e}`));
+      .then(() => piiEngineEcho("[PII Engine] NER ready (background init complete)"))
+      .catch((e) => piiEngineEcho(`[PII Engine] NER unavailable: ${e}`));
   }
 
   async ensureReady(): Promise<void> {
@@ -264,7 +279,7 @@ export class PIIEngine {
     this.startNerBackground();
 
     // Don't block on NER — patterns are always available
-    console.error("[PII Engine] Ready (patterns mode, NER loading in background)");
+    piiEngineEcho("[PII Engine] Ready (patterns mode, NER loading in background)");
     this._initialized = true;
   }
 
@@ -283,12 +298,12 @@ export class PIIEngine {
         new Promise<void>((r) => setTimeout(r, intervalMs)),
       ]);
       if (isNerReady()) {
-        console.error(`[PII Engine] NER became ready after ${i + 1} wait cycle(s)`);
+        piiEngineEcho(`[PII Engine] NER became ready after ${i + 1} wait cycle(s)`);
         return;
       }
-      console.error(`[PII Engine] NER not ready yet, waiting... (${i + 1}/${maxAttempts})`);
+      piiEngineEcho(`[PII Engine] NER not ready yet, waiting... (${i + 1}/${maxAttempts})`);
     }
-    console.error(`[PII Engine] NER still not ready after ${maxAttempts} attempts, proceeding with patterns only`);
+    piiEngineEcho(`[PII Engine] NER still not ready after ${maxAttempts} attempts, proceeding with patterns only`);
   }
 
   /**

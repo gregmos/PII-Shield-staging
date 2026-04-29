@@ -639,7 +639,10 @@ export function getNerStats(): { calls: number; totalEntities: number; lastError
 export function nerLog(msg: string): void {
   const ts = new Date().toISOString();
   const line = `${ts} ${msg}\n`;
-  console.error(line.trim());
+  // Gate stderr echo behind PII_AUDIT_STDERR (CLI sets false; MCP keeps true).
+  if (process.env.PII_AUDIT_STDERR !== "false") {
+    console.error(line.trim());
+  }
   try {
     const logDir = PATHS.AUDIT_DIR;
     fs.mkdirSync(logDir, { recursive: true });
@@ -1920,7 +1923,24 @@ export async function runNer(
       threshold,
     });
     logServer(`[NER-Inference] AFTER _gliner.inference() ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â returned OK`);
-    nerLog(`[NER] runNer: raw results = ${JSON.stringify(results).slice(0, 200)}`);
+    // PII safety: GLiNER returns spanText (raw entity text) in results.
+    // Logging it would leak names / orgs / SSNs into ner_init.log. Log
+    // counts + label/offset/score only — enough for forensics, no PII.
+    const rawCounts = Array.isArray(results) ? results.map((r) => r?.length ?? 0) : [];
+    const sample =
+      Array.isArray(results) && Array.isArray(results[0])
+        ? results[0]
+            .slice(0, 5)
+            .map((e: { label?: string; start?: number; end?: number; score?: number }) => ({
+              label: e?.label,
+              start: e?.start,
+              end: e?.end,
+              score: e?.score,
+            }))
+        : [];
+    nerLog(
+      `[NER] runNer: raw counts=${JSON.stringify(rawCounts)} sample=${JSON.stringify(sample)}`,
+    );
 
     if (!results || results.length === 0) {
       _lastInferenceError = "";

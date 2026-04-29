@@ -13,13 +13,21 @@
 
 ---
 
-MCP server for [Claude Desktop](https://claude.ai/download) that reads your documents locally, replaces all personal data with placeholders (`<PERSON_1>`, `<ORG_1>`, etc.), and sends only the anonymized text to Claude. After analysis, PII Shield restores the original data into the final document — entirely on your machine. **PII never enters the API.**
+PII Shield reads your documents locally, replaces all personal data with placeholders (`<PERSON_1>`, `<ORG_1>`, etc.), and — when you want analysis — sends only the anonymized text to an LLM. After analysis, PII Shield restores the original data into the final document — entirely on your machine. **PII never enters the API.**
 
 ```
-Document ──> [PII Shield on your machine] ──> anonymized text ──> [Claude analyzes] ──> [PII Shield restores] ──> Result
-              John Smith  → <PERSON_1>                                                   <PERSON_1> → John Smith
-              Acme Corp.  → <ORG_1>                                                      <ORG_1>    → Acme Corp.
+Document ──> [PII Shield on your machine] ──> anonymized text ──> [LLM analyzes] ──> [PII Shield restores] ──> Result
+              John Smith  → <PERSON_1>                                                <PERSON_1> → John Smith
+              Acme Corp.  → <ORG_1>                                                   <ORG_1>    → Acme Corp.
 ```
+
+Three ways to use it, sharing the same engine:
+
+| Form | Who it's for | Install |
+|---|---|---|
+| **Standalone CLI** (`pii-shield`) | Anyone — anonymize files locally for any LLM (or just for compliance / GDPR). Pure offline. | `npm install -g pii-shield` |
+| **Claude Desktop extension** (`.mcpb`) | Claude Desktop users — get tools + skill + in-chat HITL panel. | Drag the `.mcpb` from a release into Settings → Extensions |
+| **Claude Code plugin** (`.zip`) | Claude Code CLI users — same tools, same skill, MCP wired automatically. | `/plugin install …` from a marketplace or local dir |
 
 > **v2.0.2 is a complete Node.js rewrite.** The original Python product is still available — see [What happened to v1?](#what-happened-to-v1) below.
 
@@ -38,7 +46,42 @@ Document ──> [PII Shield on your machine] ──> anonymized text ──> [C
 | 🤝 | **Team handoff** | `export_session(passphrase)` packs the mapping + anonymized documents into an encrypted `.pii-session` archive (AES-GCM via scrypt). Colleague runs `import_session` with the passphrase — PII never transits. |
 | 📊 | **Audit logging** | Every tool call + response logged locally to `~/.pii_shield/audit/mcp_audit.log`. NER bootstrap trace, session lifecycle, dropped stderr — all on disk, appendable, off-network. |
 
-## Quick Start
+## Standalone CLI — `pii-shield`
+
+If you don't use Claude Desktop / Claude Code, install the CLI globally and run it on any file. Works on **20–30 documents in one session** with shared placeholders across files.
+
+```bash
+npm install -g pii-shield
+
+pii-shield doctor                                       # health check
+pii-shield install-model                                # download GLiNER (~634 MB, one-off)
+
+# anonymize one file
+pii-shield anonymize contract.pdf --no-review
+
+# anonymize a batch — same session_id, same placeholders for shared entities
+pii-shield anonymize contracts/*.pdf attachments/*.docx
+
+# review opens a browser (localhost:6789) with the bulk-mode panel
+pii-shield review 2026-04-29_101617_9f40
+
+# restore PII back when you're done
+pii-shield deanonymize contract_anonymized.pdf --session 2026-04-29_101617_9f40
+```
+
+| Command | What it does |
+|---|---|
+| `pii-shield anonymize <files…>` | Anonymize one or many files in one session. Shared placeholders across files. |
+| `pii-shield deanonymize <file>` | Restore PII. Session id read from `.docx` metadata, `--session`, or latest. |
+| `pii-shield scan <file> [--json]` | Preview detected entities without writing anything. |
+| `pii-shield review <session-id>` | Re-open the HITL review panel for a session. |
+| `pii-shield sessions list` / `show` / `export` / `import` | Inspect and hand off sessions across machines. |
+| `pii-shield install-model [--yes]` | Download/extract the GLiNER ONNX model. |
+| `pii-shield doctor [--json]` | Check Node, deps, model, paths. |
+
+The CLI uses the same engine, mappings, and audit log as the MCP variants. Sessions are interchangeable: anonymize on the CLI, deanonymize from Claude Desktop, or vice versa — the mapping store is shared (`~/.pii_shield/mappings/`). Requires Node 18+.
+
+## Claude Desktop / Claude Code
 
 ### Prerequisites
 

@@ -60,6 +60,40 @@ function ensureDir(): void {
 ensureDir();
 
 /**
+ * Whitelist of characters allowed in a session id when used as a filename.
+ * `newSessionId()` only emits `[0-9a-f_-]`, but legacy callers (older MCP
+ * builds, hand-pasted UUIDs) may use letters too. The regex stops any
+ * `..`, `/`, `\`, or absolute-path attempt — required because session ids
+ * can flow in from untrusted sources (`.docx` custom-xml metadata, MCP tool
+ * arguments, CLI `--session` flag).
+ */
+const SAFE_SESSION_ID_RE = /^[A-Za-z0-9_-]{4,128}$/;
+
+export function isSafeSessionId(sid: unknown): sid is string {
+  return typeof sid === "string" && SAFE_SESSION_ID_RE.test(sid);
+}
+
+/**
+ * Throw if `sid` would let `path.join(MAPPINGS_DIR, \`${sid}.json\`)` escape
+ * MAPPINGS_DIR (path traversal) or address a non-mapping file. Defense in
+ * depth — also called inside the store's read/write entry points so even
+ * direct callers that skip CLI-level validation are protected.
+ */
+export function assertSafeSessionId(sid: unknown): asserts sid is string {
+  if (!isSafeSessionId(sid)) {
+    const shown = typeof sid === "string" ? sid.slice(0, 80) : String(sid);
+    throw new Error(
+      `Invalid session id ${JSON.stringify(shown)}: must match ${SAFE_SESSION_ID_RE} (letters/digits/dash/underscore, 4-128 chars).`,
+    );
+  }
+}
+
+function mappingFilePath(sessionId: string): string {
+  assertSafeSessionId(sessionId);
+  return path.join(PATHS.MAPPINGS_DIR, `${sessionId}.json`);
+}
+
+/**
  * Generate a new session ID with a human-readable timestamp prefix.
  *
  * Format: `YYYY-MM-DD_HHMMSS_XXXX` — local time, 22 characters,
@@ -101,7 +135,7 @@ export function saveMapping(
   let diskPath: string | null = null;
   try {
     ensureDir();
-    const filePath = path.join(PATHS.MAPPINGS_DIR, `${sessionId}.json`);
+    const filePath = mappingFilePath(sessionId);
     const tmpPath = filePath + ".tmp";
     fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf-8");
     fs.renameSync(tmpPath, filePath);
@@ -117,7 +151,7 @@ export function saveMapping(
 export function loadMapping(sessionId: string): Record<string, string> {
   // Try disk first
   try {
-    const filePath = path.join(PATHS.MAPPINGS_DIR, `${sessionId}.json`);
+    const filePath = mappingFilePath(sessionId);
     if (fs.existsSync(filePath)) {
       const data = JSON.parse(fs.readFileSync(filePath, "utf-8")) as MappingData;
       // Cache in memory
@@ -141,7 +175,7 @@ export function loadMapping(sessionId: string): Record<string, string> {
  */
 export function loadMappingData(sessionId: string): MappingData | null {
   try {
-    const filePath = path.join(PATHS.MAPPINGS_DIR, `${sessionId}.json`);
+    const filePath = mappingFilePath(sessionId);
     if (fs.existsSync(filePath)) {
       const data = JSON.parse(fs.readFileSync(filePath, "utf-8")) as MappingData;
       if (!data.metadata || typeof data.metadata !== "object") data.metadata = {};
@@ -217,9 +251,10 @@ export function saveSessionState(
 
 /** Check if a session exists on disk or in memory. */
 export function sessionExists(sessionId: string): boolean {
+  if (!isSafeSessionId(sessionId)) return false;
   if (_inMemory.has(sessionId)) return true;
   try {
-    const filePath = path.join(PATHS.MAPPINGS_DIR, `${sessionId}.json`);
+    const filePath = mappingFilePath(sessionId);
     return fs.existsSync(filePath);
   } catch {
     return false;
@@ -263,10 +298,16 @@ export function latestSessionId(): string | null {
       let latest = "";
       let latestMtime = 0;
       for (const f of files) {
+        const sid = f.replace(".json", "");
+        // Skip any pre-existing session file that doesn't pass the
+        // sanitizer — same rule the read/write paths enforce, so an old
+        // weirdly-named file can't become the silent default for
+        // `--session` resolution.
+        if (!isSafeSessionId(sid)) continue;
         const stat = fs.statSync(path.join(PATHS.MAPPINGS_DIR, f));
         if (stat.mtimeMs > latestMtime) {
           latestMtime = stat.mtimeMs;
-          latest = f.replace(".json", "");
+          latest = sid;
         }
       }
       if (latest) return latest;
@@ -279,7 +320,7 @@ export function latestSessionId(): string | null {
   let latest = "";
   let latestTs = 0;
   for (const [sid, data] of _inMemory) {
-    if (!sid.startsWith("review:") && data.timestamp > latestTs) {
+    if (!sid.startsWith("review:") && isSafeSessionId(sid) && data.timestamp > latestTs) {
       latestTs = data.timestamp;
       latest = sid;
     }

@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "./",
+    "lib": ["ES2022", "DOM"],
+    "types": []
+  },
+  "include": ["ui/src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "ui/dist"]
+}

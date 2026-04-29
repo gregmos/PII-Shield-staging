@@ -711,8 +711,11 @@ function removeEntity(idx: number): void {
       }
     }
     showToast(`Removed${count > 1 ? ` ${count} occurrences of` : ""} "${entity.text}"`, "remove");
-    // Bulk: propagate the remove decision to sibling (non-approved) sessions.
-    propagateRemoveToSiblings(entity.text, entity.type);
+    // Removal is per-tab on purpose. Cross-tab "remove" propagation is a
+    // less-redaction decision: a string that's a false positive in this
+    // doc may be real PII in a sibling doc, and we don't want to silently
+    // unmask it before the user reviews that tab. Only "add" propagates
+    // (more-redaction direction is always safe). Matches USAGE.md.
     renderDocTabs();
   } else {
     removedIndices.add(idx);
@@ -733,8 +736,7 @@ function restoreEntity(idx: number): void {
       }
     }
     showToast(`Restored${count > 1 ? ` ${count} occurrences of` : ""} "${entity.text}"`, "restore");
-    // Bulk: undo propagation in sibling sessions.
-    propagateRestoreToSiblings(entity.text, entity.type);
+    // Restore is per-tab; the symmetric counterpart of removal staying per-tab.
     renderDocTabs();
   } else {
     removedIndices.delete(idx);

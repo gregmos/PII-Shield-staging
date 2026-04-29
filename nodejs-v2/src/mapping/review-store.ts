@@ -15,6 +15,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { PATHS } from "../utils/config.js";
 import { logServer } from "../audit/audit-logger.js";
+import { assertSafeSessionId, isSafeSessionId } from "./mapping-store.js";
 
 export interface ReviewEntity {
   text: string;
@@ -85,6 +86,7 @@ function ensureDir(): void {
 
 /** Save review data to memory + disk */
 export function saveReview(sessionId: string, data: ReviewData): void {
+  assertSafeSessionId(sessionId);
   // Normalise: if caller forgot timestamp / documents, fill in safe defaults.
   if (typeof data.timestamp !== "number") data.timestamp = Date.now();
   if (!Array.isArray(data.documents)) data.documents = [];
@@ -177,6 +179,7 @@ function normaliseDoc(doc: Partial<PerDocReview>): PerDocReview {
 
 /** Get review data: memory first, then disk. Auto-migrates legacy format. */
 export function getReview(sessionId: string): ReviewData | null {
+  if (!isSafeSessionId(sessionId)) return null;
   // Memory first — assumed already normalised (we always save through saveReview).
   const memData = _reviews.get(sessionId);
   if (memData) return memData;
